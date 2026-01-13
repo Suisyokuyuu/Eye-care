@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Dict, List, Tuple
 
-from eye_care.state.utils import seconds_to_hhmmss
+from scripts.state.utils import seconds_to_hhmmss
 
 
 # =============================================================
@@ -22,11 +22,14 @@ class Top10Bars(ttk.Frame):
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
         self._data: List[Tuple[str, int]] = []
+        self._icon_map: Dict[str, str] = {}
+        self._icon_cache: Dict[str, tk.PhotoImage] = {}
         self.canvas.bind("<Configure>", lambda _e: self._redraw())
 
-    def update_data(self, app_seconds: Dict[str, int]) -> None:
+    def update_data(self, app_seconds: Dict[str, int], icon_map: Dict[str, str] | None = None) -> None:
         items = sorted(app_seconds.items(), key=lambda x: x[1], reverse=True)[:10]
         self._data = [(k, int(v)) for k, v in items]
+        self._icon_map = dict(icon_map or {})
         self._redraw()
 
     def _redraw(self) -> None:
@@ -45,7 +48,7 @@ class Top10Bars(ttk.Frame):
         row_h = 34
         top = 8
         left = 8
-        bar_left = 48
+        bar_left = 58
         bar_right = w - 16
         bar_w = max(bar_right - bar_left, 50)
 
@@ -60,9 +63,27 @@ class Top10Bars(ttk.Frame):
             pct = sec / total
             fill_w = int(bar_w * pct)
 
-            c.create_rectangle(left, y + 9, left + 18, y + 25, fill="#cfe8d8", outline="#9fcdb0")
+            icon = self._load_icon(name)
+            if icon:
+                c.create_image(left + 12, y + 17, image=icon)
+            else:
+                c.create_rectangle(left, y + 9, left + 24, y + 25, fill="#cfe8d8", outline="#9fcdb0")
             c.create_rectangle(bar_left, y + 9, bar_left + bar_w, y + 25, fill=faint, outline=faint)
             c.create_rectangle(bar_left, y + 9, bar_left + fill_w, y + 25, fill=bar_color, outline=bar_color)
 
             label = f"{name}  {seconds_to_hhmmss(sec)}"
             c.create_text(bar_left + 8, y + 17, anchor="w", text=label, fill="white")
+
+    def _load_icon(self, name: str) -> tk.PhotoImage | None:
+        path = self._icon_map.get(name)
+        if not path:
+            return None
+        cached = self._icon_cache.get(path)
+        if cached:
+            return cached
+        try:
+            img = tk.PhotoImage(file=path)
+        except Exception:
+            return None
+        self._icon_cache[path] = img
+        return img

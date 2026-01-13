@@ -6,8 +6,10 @@ from pathlib import Path
 from datetime import date
 from typing import Callable, List, Tuple
 
-from eye_care.state.controller import AppController
-from eye_care.state.utils import seconds_to_hhmmss
+from PIL import Image, ImageTk
+
+from scripts.state.controller import AppController
+from scripts.state.utils import seconds_to_hhmmss
 
 
 class FloatingWindow:
@@ -35,6 +37,8 @@ class FloatingWindow:
         self.win.attributes("-alpha", 0.90)
 
         self._visible = False
+        self._last_icon_path = ""
+        self._icon_img = None
 
         self._drag = {"mode": None, "x": 0, "y": 0, "wx": 0, "wy": 0, "w": 0, "h": 0}
         self._resize_hot = 16
@@ -63,11 +67,14 @@ class FloatingWindow:
                                  font=("Segoe UI", 9, "bold"))
         self.lbl_mode.pack(side=tk.LEFT, padx=(6, 0), pady=4)
 
+        self.lbl_icon = tk.Label(self.titlebar, bg="#f3f4f6")
+        self.lbl_icon.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
+
         self.lbl_app = tk.Label(self.titlebar, text="", bg="#f3f4f6", fg="#6B7280",
                                 font=("Segoe UI", 9))
         self.lbl_app.pack(side=tk.RIGHT, padx=(0, 8), pady=4)
 
-        for w in (self.titlebar, self.lbl_title, self.lbl_app, self.dot, self.lbl_mode):
+        for w in (self.titlebar, self.lbl_title, self.lbl_app, self.lbl_icon, self.dot, self.lbl_mode):
             w.bind("<Button-1>", self._mouse_down)
             w.bind("<B1-Motion>", self._mouse_move)
             w.bind("<ButtonRelease-1>", self._mouse_up)
@@ -123,6 +130,9 @@ class FloatingWindow:
             return
         self._visible = True
         self.win.deiconify()
+        self.win.lift()
+        self.win.attributes("-topmost", bool(self.var_topmost.get()))
+        self.win.update_idletasks()
 
     def hide(self) -> None:
         if not self._visible:
@@ -228,6 +238,7 @@ class FloatingWindow:
 
         st = self.controller.get_ui_status()
         self.lbl_app.config(text=st.front_app or "")
+        self._update_app_icon(st.front_app_icon)
 
         if st.watching:
             self.lbl_mode.config(text="【观影】")
@@ -236,12 +247,12 @@ class FloatingWindow:
         else:
             self.lbl_mode.config(text="")
 
-        if st.run_mode == "IDLE":
-            dot = "#2563eb"
-        elif st.watching:
+        if st.watching:
             dot = "#7c3aed"
         elif st.dnd:
             dot = "#ef4444"
+        elif st.run_mode == "IDLE":
+            dot = "#2563eb"
         elif st.need_break:
             dot = "#d97706"
         else:
@@ -268,6 +279,24 @@ class FloatingWindow:
         c = self.dot
         c.delete("all")
         c.create_oval(2, 2, 14, 14, fill=color, outline=color)
+
+    def _update_app_icon(self, path: str) -> None:
+        if path == self._last_icon_path:
+            return
+
+        self._last_icon_path = path or ""
+        if not path:
+            self._icon_img = None
+            self.lbl_icon.configure(image="")
+            return
+
+        try:
+            img = Image.open(path).convert("RGBA").resize((16, 16), Image.LANCZOS)
+            self._icon_img = ImageTk.PhotoImage(img)
+            self.lbl_icon.configure(image=self._icon_img)
+        except Exception:
+            self._icon_img = None
+            self.lbl_icon.configure(image="")
 
     def _draw_top(self, items: List[Tuple[str, int]], total: int) -> None:
         c = self.canvas

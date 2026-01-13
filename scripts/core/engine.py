@@ -38,6 +38,8 @@ class CoreEngine:
 
     def toggle_dnd(self) -> None:
         self._dnd = not self._dnd
+        if self._dnd:
+            self._watching = False
         # 开启勿扰：立刻静默（不保留提醒态），并把下一次提醒推迟到再工作一个阈值
         if self._dnd:
             self._need_break = False
@@ -45,6 +47,8 @@ class CoreEngine:
 
     def toggle_watching(self) -> None:
         self._watching = not self._watching
+        if self._watching:
+            self._dnd = False
         # 开启观影：同样静默（但不影响 idle 判定）
         if self._watching:
             self._need_break = False
@@ -83,12 +87,6 @@ class CoreEngine:
             self._run_mode = RunMode.IDLE
             self._idle_elapsed_s = idle_elapsed
             self._rest_remaining_s = max(rest_time - idle_elapsed, 0)
-
-            # 刚进入 idle：解除提醒（用户已开始休息/离开）
-            if not self._prev_idle:
-                self._need_break = False
-                # 下一次气泡推迟到再次工作一个阈值
-                self._next_remind_at = self._continuous_work_s + int(getattr(self.cfg, "work_threshold_s", 45 * 60))
 
             # idle 满足 rest_time：算本轮休息完成 -> 新一轮
             if (idle_elapsed >= rest_time) and (not self._rest_done_in_idle):

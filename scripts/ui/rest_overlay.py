@@ -4,7 +4,7 @@ import ctypes
 import tkinter as tk
 from typing import Callable, List, Tuple
 
-from eye_care.state.utils import seconds_to_hhmmss
+from scripts.state.utils import seconds_to_hhmmss
 
 
 def _enum_monitors() -> List[Tuple[int, int, int, int]]:
@@ -100,7 +100,7 @@ class RestOverlay:
             )
             c.create_text(
                 cx, cy + r + 40,
-                text="休息中 · ESC 结束（视为已休息但不算完成本轮）",
+                text="休息中 · ESC 跳过（本轮不算休息）",
                 fill="#e5e7eb",
                 font=("Segoe UI", 12)
             )
