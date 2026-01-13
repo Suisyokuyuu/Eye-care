@@ -1,0 +1,4 @@
+pynput
+pystray
+Pillow
+win10toast
