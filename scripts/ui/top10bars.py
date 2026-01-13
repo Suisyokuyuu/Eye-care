@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Dict, List, Tuple
 
-from eye_care.state.utils import seconds_to_hhmmss
+from scripts.state.utils import seconds_to_hhmmss
 
 
 # =============================================================

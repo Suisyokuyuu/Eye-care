@@ -84,12 +84,6 @@ class CoreEngine:
             self._idle_elapsed_s = idle_elapsed
             self._rest_remaining_s = max(rest_time - idle_elapsed, 0)
 
-            # 刚进入 idle：解除提醒（用户已开始休息/离开）
-            if not self._prev_idle:
-                self._need_break = False
-                # 下一次气泡推迟到再次工作一个阈值
-                self._next_remind_at = self._continuous_work_s + int(getattr(self.cfg, "work_threshold_s", 45 * 60))
-
             # idle 满足 rest_time：算本轮休息完成 -> 新一轮
             if (idle_elapsed >= rest_time) and (not self._rest_done_in_idle):
                 self._rest_done_in_idle = True

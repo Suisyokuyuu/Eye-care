@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageDraw, ImageOps
 
-from eye_care.state.controller import AppController
+from scripts.state.controller import AppController
 
 
 class TrayIcon:
@@ -59,11 +59,6 @@ class TrayIcon:
 
         bx0, by0, bx1, by1 = 42, 42, 62, 62
 
-        if st.run_mode == "IDLE":
-            d.ellipse((bx0, by0, bx1, by1), fill="#2563eb", outline="#2563eb")
-            d.text((48, 44), "Z", fill="white")
-            return base
-
         if st.watching:
             d.ellipse((bx0, by0, bx1, by1), fill="#7c3aed", outline="#7c3aed")
             d.polygon([(49, 46), (49, 58), (60, 52)], fill="white")
@@ -72,6 +67,11 @@ class TrayIcon:
         if st.dnd:
             d.ellipse((bx0, by0, bx1, by1), fill="#ef4444", outline="#ef4444")
             d.rectangle((48, 51, 58, 54), fill="white")
+            return base
+
+        if st.run_mode == "IDLE":
+            d.ellipse((bx0, by0, bx1, by1), fill="#2563eb", outline="#2563eb")
+            d.text((48, 44), "Z", fill="white")
             return base
 
         if st.need_break:

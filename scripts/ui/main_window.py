@@ -7,13 +7,13 @@ from datetime import date, timedelta
 from pathlib import Path
 from collections import OrderedDict, defaultdict
 
-from eye_care.core.models import CoreConfig
-from eye_care.state.controller import AppController
-from eye_care.state.utils import seconds_to_hhmmss, app_to_category
-from eye_care.ui.top10bars import Top10Bars
-from eye_care.ui.rest_overlay import RestOverlay
-from eye_care.ui.tooltip import ToolTip
-from eye_care.ui.notify import show_toast
+from scripts.core.models import CoreConfig
+from scripts.state.controller import AppController
+from scripts.state.utils import seconds_to_hhmmss, app_to_category
+from scripts.ui.top10bars import Top10Bars
+from scripts.ui.rest_overlay import RestOverlay
+from scripts.ui.tooltip import ToolTip
+from scripts.ui.notify import show_toast
 
 
 class MainWindow:
@@ -80,22 +80,6 @@ class MainWindow:
 
         btn_frame = ttk.Frame(row2)
         btn_frame.pack(side=tk.LEFT)
-
-        b_refresh = ttk.Button(btn_frame, text="刷新", command=self.refresh_all)
-        b_refresh.pack(side=tk.LEFT, padx=5)
-        ToolTip(b_refresh, "立即刷新主界面数据。")
-
-        b_dnd = ttk.Button(btn_frame, text="勿扰模式", command=self.controller.toggle_dnd)
-        b_dnd.pack(side=tk.LEFT, padx=5)
-        ToolTip(b_dnd, "勿扰：不弹提醒气泡，浮窗也不提示“该休息”。需要手动退出。")
-
-        b_watch = ttk.Button(btn_frame, text="观影模式", command=self.controller.toggle_watching)
-        b_watch.pack(side=tk.LEFT, padx=5)
-        ToolTip(b_watch, "观影：不弹提醒气泡，浮窗也不提示“该休息”。需要手动退出。")
-
-        b_rest = ttk.Button(btn_frame, text="马上休息", command=self.rest_now)
-        b_rest.pack(side=tk.LEFT, padx=5)
-        ToolTip(b_rest, "立刻开始圆环倒计时。ESC 可提前结束。")
 
         b_set = ttk.Button(btn_frame, text="参数设置", command=self.open_settings)
         b_set.pack(side=tk.LEFT, padx=5)
@@ -239,7 +223,7 @@ class MainWindow:
         rest_s = int(getattr(self.controller.engine.cfg, "rest_time_s", 300))
 
         def on_skip():
-            # ESC：只是提前结束，不算“本轮完成”
+            # ESC：跳过本轮休息，不算完成
             self._rest_overlay = None
 
         def on_complete():
