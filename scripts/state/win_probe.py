@@ -21,6 +21,24 @@ if sys.platform == "win32":
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
+    GetForegroundWindow = user32.GetForegroundWindow
+    GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+    GetIconInfo = user32.GetIconInfo
+    DestroyIcon = user32.DestroyIcon
+
+    OpenProcess = kernel32.OpenProcess
+    CloseHandle = kernel32.CloseHandle
+    QueryFullProcessImageNameW = kernel32.QueryFullProcessImageNameW
+
+    ExtractIconExW = shell32.ExtractIconExW
+
+    CreateCompatibleDC = gdi32.CreateCompatibleDC
+    DeleteDC = gdi32.DeleteDC
+    GetObjectW = gdi32.GetObjectW
+    GetDIBits = gdi32.GetDIBits
+    SelectObject = gdi32.SelectObject
+    DeleteObject = gdi32.DeleteObject
+
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
     class ICONINFO(ctypes.Structure):
@@ -66,77 +84,6 @@ if sys.platform == "win32":
 
     BI_RGB = 0
 
-    GetForegroundWindow = user32.GetForegroundWindow
-    GetForegroundWindow.restype = wintypes.HWND
-
-    GetWindowThreadProcessId = user32.GetWindowThreadProcessId
-    GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    GetWindowThreadProcessId.restype = wintypes.DWORD
-
-    GetIconInfo = user32.GetIconInfo
-    GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(ICONINFO)]
-    GetIconInfo.restype = wintypes.BOOL
-
-    DestroyIcon = user32.DestroyIcon
-    DestroyIcon.argtypes = [wintypes.HICON]
-    DestroyIcon.restype = wintypes.BOOL
-
-    OpenProcess = kernel32.OpenProcess
-    OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    OpenProcess.restype = wintypes.HANDLE
-
-    CloseHandle = kernel32.CloseHandle
-    CloseHandle.argtypes = [wintypes.HANDLE]
-    CloseHandle.restype = wintypes.BOOL
-
-    QueryFullProcessImageNameW = kernel32.QueryFullProcessImageNameW
-    QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-    QueryFullProcessImageNameW.restype = wintypes.BOOL
-
-    ExtractIconExW = shell32.ExtractIconExW
-    ExtractIconExW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.HICON), wintypes.UINT]
-    ExtractIconExW.restype = ctypes.c_uint
-
-    CreateCompatibleDC = gdi32.CreateCompatibleDC
-    CreateCompatibleDC.argtypes = [wintypes.HDC]
-    CreateCompatibleDC.restype = wintypes.HDC
-
-    DeleteDC = gdi32.DeleteDC
-    DeleteDC.argtypes = [wintypes.HDC]
-    DeleteDC.restype = wintypes.BOOL
-
-    GetObjectW = gdi32.GetObjectW
-    GetObjectW.argtypes = [wintypes.HGDIOBJ, ctypes.c_int, ctypes.c_void_p]
-    GetObjectW.restype = ctypes.c_int
-
-    GetDIBits = gdi32.GetDIBits
-    GetDIBits.argtypes = [
-        wintypes.HDC,
-        wintypes.HBITMAP,
-        wintypes.UINT,
-        wintypes.UINT,
-        ctypes.c_void_p,
-        ctypes.POINTER(BITMAPINFO),
-        wintypes.UINT,
-    ]
-    GetDIBits.restype = ctypes.c_int
-
-    SelectObject = gdi32.SelectObject
-    SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
-    SelectObject.restype = wintypes.HGDIOBJ
-
-    DeleteObject = gdi32.DeleteObject
-    DeleteObject.argtypes = [wintypes.HGDIOBJ]
-    DeleteObject.restype = wintypes.BOOL
-
-    GetWindowTextLengthW = user32.GetWindowTextLengthW
-    GetWindowTextLengthW.argtypes = [wintypes.HWND]
-    GetWindowTextLengthW.restype = ctypes.c_int
-
-    GetWindowTextW = user32.GetWindowTextW
-    GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    GetWindowTextW.restype = ctypes.c_int
-
 
 def get_foreground_app_short_name() -> str:
     """返回前台进程短名（不含 .exe），失败返回空字符串。"""
@@ -163,7 +110,7 @@ def get_foreground_app_info() -> Tuple[str, str]:
 
     hproc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
     if not hproc:
-        return _fallback_window_title(hwnd), ""
+        return "", ""
 
     try:
         size = 260
@@ -178,24 +125,9 @@ def get_foreground_app_info() -> Tuple[str, str]:
             if ctypes.get_last_error() == 122 and size < 4096:  # ERROR_INSUFFICIENT_BUFFER
                 size *= 2
                 continue
-            return _fallback_window_title(hwnd), ""
+            return "", ""
     finally:
         CloseHandle(hproc)
-
-
-def _fallback_window_title(hwnd: int) -> str:
-    if sys.platform != "win32" or not hwnd:
-        return ""
-    try:
-        length = GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return ""
-        buf = ctypes.create_unicode_buffer(length + 1)
-        GetWindowTextW(hwnd, buf, length + 1)
-        title = buf.value.strip()
-        return title
-    except Exception:
-        return ""
 
 
 def _hicon_to_image(hicon: int) -> Image.Image | None:

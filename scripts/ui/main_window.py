@@ -175,8 +175,7 @@ class MainWindow:
             pct = sec / total * 100.0
             self.tree.insert("", tk.END, values=(name, seconds_to_hhmmss(sec), f"{pct:.1f}%"))
 
-        icon_map = self.controller.get_app_icon_map()
-        self.top10_panel.update_data(data, icon_map)
+        self.top10_panel.update_data(data)
 
     # ---------------- save/import/export ----------------
 

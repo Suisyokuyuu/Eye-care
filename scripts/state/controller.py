@@ -53,7 +53,6 @@ class AppController:
         self._latest_ui: UiStatus = UiStatus()
         self._latest_icon_path: str = ""
         self._icon_cache: Dict[str, str] = {}
-        self._app_icon_by_name: Dict[str, str] = {}
 
         self._running = False
         self._tick_thread: Optional[threading.Thread] = None
@@ -95,14 +94,8 @@ class AppController:
 
     def _refresh_now(self) -> None:
         now = time.time()
-        try:
-            app, exe_path = get_foreground_app_info()
-            icon_path = self._ensure_app_icon(exe_path)
-        except Exception:
-            app, exe_path, icon_path = "", "", ""
-
-        if not app:
-            app = "未知应用"
+        app, exe_path = get_foreground_app_info()
+        icon_path = self._ensure_app_icon(exe_path)
         snap = self.engine.tick(now, app)
         self._publish_snapshot(snap, icon_path)
         self._notify_ui()
@@ -136,10 +129,6 @@ class AppController:
     def get_ai_payload(self) -> dict:
         return self.repo.export_for_ai()
 
-    def get_app_icon_map(self) -> Dict[str, str]:
-        with self._lock:
-            return dict(self._app_icon_by_name)
-
     # ---------------- internal ----------------
 
     def _on_user_input(self) -> None:
@@ -155,15 +144,8 @@ class AppController:
                     break
 
             now = time.time()
-            try:
-                front_app, exe_path = get_foreground_app_info()
-                icon_path = self._ensure_app_icon(exe_path)
-            except Exception:
-                front_app, exe_path, icon_path = "", "", ""
-
-            if not front_app:
-                front_app = "未知应用"
-
+            front_app, exe_path = get_foreground_app_info()
+            icon_path = self._ensure_app_icon(exe_path)
             snap = self.engine.tick(now, front_app)
 
             # 统计常开：ACTIVE 且有 app 累加
@@ -226,9 +208,6 @@ class AppController:
                 ui.idle_text = ""
                 ui.rest_text = ""
 
-            if ui.front_app and ui.front_app_icon:
-                self._app_icon_by_name[ui.front_app] = ui.front_app_icon
-
             self._latest = snap
             self._latest_ui = ui
 
@@ -249,12 +228,7 @@ class AppController:
             self._latest_icon_path = str(out_path)
             return str(out_path)
 
-        try:
-            ok = extract_app_icon_png(exe_path, out_path, size=32)
-        except Exception:
-            ok = False
-
-        if ok:
+        if extract_app_icon_png(exe_path, out_path, size=32):
             self._icon_cache[exe_path] = str(out_path)
             self._latest_icon_path = str(out_path)
             return str(out_path)
