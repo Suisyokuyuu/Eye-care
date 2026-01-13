@@ -6,15 +6,15 @@ import faulthandler
 import tkinter as tk
 from pathlib import Path
 
-from eye_care.core.engine import CoreEngine
-from eye_care.core.models import CoreConfig
-from eye_care.data.repo import StatsRepository
-from eye_care.state.controller import AppController
+from scripts.core.engine import CoreEngine
+from scripts.core.models import CoreConfig
+from scripts.data.repo import StatsRepository
+from scripts.state.controller import AppController
 
-from eye_care.ui.main_window import MainWindow
-from eye_care.ui.floating import FloatingWindow
-from eye_care.ui.tray_icon import TrayIcon
-from eye_care.ui.notify import set_notify_root, notify_need_break
+from scripts.ui.main_window import MainWindow
+from scripts.ui.floating import FloatingWindow
+from scripts.ui.tray_icon import TrayIcon
+from scripts.ui.notify import set_notify_root, notify_need_break
 
 
 def app_root_dir() -> Path:
@@ -64,7 +64,7 @@ def main() -> None:
         set_notify_root(root)
 
         def on_need_break(_):
-            notify_need_break("护眼提醒", "该休息一下了（浮窗右键：马上休息 / ESC 可跳过）")
+            notify_need_break("护眼提醒", "该休息一下了（浮窗右键：马上休息 / ESC 跳过本轮）")
 
         controller.on_need_break = on_need_break
         controller.start()

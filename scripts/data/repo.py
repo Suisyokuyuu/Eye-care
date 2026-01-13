@@ -130,6 +130,14 @@ class StatsRepository:
             "export_id": str(uuid.uuid4()),
         }
 
+    def export_for_ai(self) -> dict:
+        """预留给外部助手/接口的导出格式。"""
+        return {
+            "device_id": self._meta.device_id if self._meta else "",
+            "schema_version": self._meta.schema_version if self._meta else 1,
+            "metrics": asdict(self._metrics) if self._metrics else {"by_day": {}},
+        }
+
     def import_payload(self, payload: dict) -> Tuple[bool, str | None]:
         export_id = payload.get("export_id")
         if not export_id:

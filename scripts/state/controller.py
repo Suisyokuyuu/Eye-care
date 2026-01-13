@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from dataclasses import dataclass
@@ -7,11 +8,11 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, Optional, List
 
-from eye_care.core.engine import CoreEngine
-from eye_care.core.models import CoreSnapshot, RunMode
-from eye_care.data.repo import StatsRepository
+from scripts.core.engine import CoreEngine
+from scripts.core.models import CoreSnapshot, RunMode
+from scripts.data.repo import StatsRepository
 
-from .win_probe import get_foreground_app_short_name
+from .win_probe import get_foreground_app_info, extract_app_icon_png
 from .input_watch import InputWatcher
 from .utils import aggregate_range, seconds_to_hhmmss
 
@@ -20,6 +21,7 @@ from .utils import aggregate_range, seconds_to_hhmmss
 class UiStatus:
     run_mode: str = "ACTIVE"
     front_app: str = ""
+    front_app_icon: str = ""
 
     dnd: bool = False
     watching: bool = False
@@ -43,10 +45,14 @@ class AppController:
         self.data_dir = Path(data_dir)
         self.engine = engine
         self.repo = repo
+        self.icon_dir = self.data_dir / "app_icons"
+        self.icon_dir.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.RLock()
         self._latest: CoreSnapshot = CoreSnapshot()
         self._latest_ui: UiStatus = UiStatus()
+        self._latest_icon_path: str = ""
+        self._icon_cache: Dict[str, str] = {}
 
         self._running = False
         self._tick_thread: Optional[threading.Thread] = None
@@ -88,9 +94,10 @@ class AppController:
 
     def _refresh_now(self) -> None:
         now = time.time()
-        app = get_foreground_app_short_name()
+        app, exe_path = get_foreground_app_info()
+        icon_path = self._ensure_app_icon(exe_path)
         snap = self.engine.tick(now, app)
-        self._publish_snapshot(snap)
+        self._publish_snapshot(snap, icon_path)
         self._notify_ui()
 
     def toggle_dnd(self) -> None:
@@ -119,6 +126,9 @@ class AppController:
         by_day = metrics.by_day if metrics else {}
         return aggregate_range(by_day, start, end)
 
+    def get_ai_payload(self) -> dict:
+        return self.repo.export_for_ai()
+
     # ---------------- internal ----------------
 
     def _on_user_input(self) -> None:
@@ -134,7 +144,8 @@ class AppController:
                     break
 
             now = time.time()
-            front_app = get_foreground_app_short_name()
+            front_app, exe_path = get_foreground_app_info()
+            icon_path = self._ensure_app_icon(exe_path)
             snap = self.engine.tick(now, front_app)
 
             # 统计常开：ACTIVE 且有 app 累加
@@ -151,15 +162,18 @@ class AppController:
                 except Exception:
                     pass
 
-            self._publish_snapshot(snap)
+            self._publish_snapshot(snap, icon_path)
             self._notify_ui()
 
             time.sleep(1)
 
-    def _publish_snapshot(self, snap: CoreSnapshot) -> None:
+    def _publish_snapshot(self, snap: CoreSnapshot, icon_path: str = "") -> None:
         with self._lock:
+            if icon_path:
+                self._latest_icon_path = icon_path
             ui = UiStatus()
             ui.front_app = snap.front_app
+            ui.front_app_icon = self._latest_icon_path
             ui.run_mode = snap.run_mode.value
 
             ui.dnd = bool(getattr(snap, "dnd", False))
@@ -196,3 +210,28 @@ class AppController:
 
             self._latest = snap
             self._latest_ui = ui
+
+    def _ensure_app_icon(self, exe_path: str) -> str:
+        if not exe_path:
+            self._latest_icon_path = ""
+            return ""
+
+        cached = self._icon_cache.get(exe_path)
+        if cached and Path(cached).exists():
+            self._latest_icon_path = cached
+            return cached
+
+        digest = hashlib.sha1(exe_path.encode("utf-8", errors="ignore")).hexdigest()
+        out_path = self.icon_dir / f"{digest}.png"
+        if out_path.exists():
+            self._icon_cache[exe_path] = str(out_path)
+            self._latest_icon_path = str(out_path)
+            return str(out_path)
+
+        if extract_app_icon_png(exe_path, out_path, size=32):
+            self._icon_cache[exe_path] = str(out_path)
+            self._latest_icon_path = str(out_path)
+            return str(out_path)
+
+        self._latest_icon_path = ""
+        return ""

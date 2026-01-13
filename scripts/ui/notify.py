@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 
 _NOTIFY_ROOT: tk.Tk | None = None
+_ACTIVE_TOAST: tk.Toplevel | None = None
 
 
 def set_notify_root(root: tk.Tk) -> None:
@@ -13,11 +14,20 @@ def set_notify_root(root: tk.Tk) -> None:
 
 def _safe_show_toast(root: tk.Tk, title: str, message: str) -> None:
     # root 已销毁/正在退出时直接放弃，避免 TclError 闪退
+    global _ACTIVE_TOAST
     try:
         if not root.winfo_exists():
             return
     except Exception:
         return
+
+    if _ACTIVE_TOAST is not None:
+        try:
+            if _ACTIVE_TOAST.winfo_exists():
+                _ACTIVE_TOAST.destroy()
+        except Exception:
+            pass
+        _ACTIVE_TOAST = None
 
     win = tk.Toplevel(root)
     win.overrideredirect(True)
@@ -53,7 +63,19 @@ def _safe_show_toast(root: tk.Tk, title: str, message: str) -> None:
         justify="left",
     ).pack(anchor="w", padx=12)
 
-    win.after(3500, lambda: (win.winfo_exists() and win.destroy()))
+    _ACTIVE_TOAST = win
+
+    def _close():
+        global _ACTIVE_TOAST
+        try:
+            if win.winfo_exists():
+                win.destroy()
+        except Exception:
+            pass
+        if _ACTIVE_TOAST is win:
+            _ACTIVE_TOAST = None
+
+    win.after(3500, _close)
 
 
 def show_toast(root: tk.Tk, title: str, message: str) -> None:
