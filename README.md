@@ -1,4 +1,4 @@
-# EyE Care
+# Eye Care
 
 Windows 屏幕时间统计 + 休息提醒的小工具。
 
@@ -54,9 +54,10 @@ Windows 屏幕时间统计 + 休息提醒的小工具。
 ## License
 MIT License. 详见仓库中的 `LICENSE` 文件。
 
+
 ---------------------------------------------------------------------------
 
-# EyE Care
+# Eye Care
 
 A small Windows tool for screen-time tracking and break reminders.
 
