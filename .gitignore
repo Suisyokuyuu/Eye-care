@@ -1,27 +1,40 @@
-# Python
+# ===== Python cache =====
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 
-# venv
-venv/
+# ===== Virtual environments =====
 .venv/
+venv/
+ENV/
+env/
 
-# build artifacts
+# ===== IDE / editor =====
+.vscode/
+.idea/
+
+# ===== OS junk =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Runtime data (your app) =====
+data/
+import_log.json
+float_config.json
+*_config.json
+*_log.json
+
+# ===== Build / packaging artifacts =====
 dist/
 build/
 *.spec
 
-# logs & runtime data
-logs/
-*.log
-data/
-import_log.json
-float_config.json
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# ===== Test / coverage =====
+.pytest_cache/
+.coverage
+htmlcov/
