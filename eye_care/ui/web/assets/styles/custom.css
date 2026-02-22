@@ -1,0 +1,431 @@
+/* 自定义组件样式 */
+
+/* 按钮样式 */
+.btn-primary {
+    background-color: #3B82F6;
+    color: white;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    transition: all 300ms;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    border: none;
+    cursor: pointer;
+}
+.btn-primary:hover {
+    background-color: #1E40AF;
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
+}
+.btn-primary:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+}
+
+.btn-secondary {
+    background-color: #1E293B;
+    color: white;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    transition: all 300ms;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    cursor: pointer;
+}
+.btn-secondary:hover {
+    background-color: #0F172A;
+}
+.btn-secondary:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+}
+
+.btn-ghost {
+    background-color: transparent;
+    color: white;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    transition: all 300ms;
+    border: none;
+    cursor: pointer;
+}
+.btn-ghost:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+.btn-ghost:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+}
+
+.btn-danger {
+    background-color: #EF4444;
+    color: white;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    transition: all 300ms;
+    border: none;
+    cursor: pointer;
+}
+.btn-danger:hover {
+    background-color: #b91c1c;
+}
+.btn-danger:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.5);
+}
+
+/* 输入框样式 */
+.input-primary {
+    background-color: #1E293B;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.5rem;
+    padding: 0.5rem 1rem;
+    color: white;
+    font-size: 0.875rem;
+}
+.input-primary:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+    border-color: transparent;
+}
+
+/* 隐藏数字输入框的上下箭头（Chrome, Safari, Edge, Opera） */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* 隐藏数字输入框的上下箭头（Firefox） */
+input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+/* 标签页样式（日/周/月等通用） */
+.tab-active {
+    border-bottom: 2px solid #3B82F6;
+    color: #3B82F6;
+}
+.tab-inactive {
+    color: #9CA3AF;
+    transition: color 300ms;
+}
+.tab-inactive:hover {
+    color: white;
+}
+
+/* 左侧「应用/分类」tabs：选中有底色+轻量下划线，未选中弱化 */
+.view-tabs .tab-active {
+    background: rgba(59, 130, 246, 0.12);
+    color: #fff;
+    border-bottom: none;
+    border-radius: 10px;
+    box-shadow: inset 0 2px 0 0 rgba(59, 130, 246, 0.5);
+    transition: background 0.2s;
+}
+.view-tabs .tab-inactive {
+    color: rgba(255, 255, 255, 0.7);
+    background: transparent;
+    border-bottom: none;
+    transition: color 0.2s, background 0.2s;
+}
+.view-tabs .tab-inactive:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.85);
+}
+
+/* 滚动条样式 */
+.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+.scrollbar-theme { scrollbar-width: thin; scrollbar-color: rgba(59,130,246,0.5) rgba(15,23,42,0.4); }
+.scrollbar-theme::-webkit-scrollbar { width: 8px; }
+.scrollbar-theme::-webkit-scrollbar-track { background: rgba(15,23,42,0.4); border-radius: 4px; margin: 4px 0; }
+.scrollbar-theme::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.45); border-radius: 4px; }
+.scrollbar-theme::-webkit-scrollbar-thumb:hover { background: rgba(59,130,246,0.7); }
+.scrollbar-theme::-webkit-scrollbar-thumb:active { background: rgba(96,165,250,0.85); }
+
+/* 标题栏样式 - 优化拖动性能 */
+.app-titlebar { 
+    -webkit-app-region: drag;
+    user-select: none;
+    -webkit-user-select: none;
+    /* GPU加速整个标题栏 */
+    transform: translate3d(0, 0, 0);
+    will-change: transform;
+}
+.app-titlebar button, .app-titlebar a { 
+    -webkit-app-region: no-drag; 
+}
+
+/* 拖动区域优化 - GPU加速，极致丝滑 */
+.pywebview-drag-region {
+    -webkit-app-region: drag;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: move;
+    
+    /* GPU加速 - 强制硬件加速 */
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+    
+    /* 优化重绘性能 */
+    will-change: transform;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    
+    /* 渲染隔离 - 减少重排重绘 */
+    contain: layout style paint;
+    
+    /* 3D渲染上下文 */
+    perspective: 1000px;
+    -webkit-perspective: 1000px;
+    
+    /* 抗锯齿优化 */
+    -webkit-font-smoothing: subpixel-antialiased;
+    
+    /* 禁用指针事件穿透优化 */
+    pointer-events: auto;
+}
+
+.titlebar-btn { 
+    width: 46px; 
+    height: 32px; 
+    display: inline-flex; 
+    align-items: center; 
+    justify-content: center; 
+    color: #ccc;
+    transition: background-color 100ms, color 100ms;
+}
+.titlebar-btn:hover { 
+    background: rgba(255,255,255,0.08); 
+    color: #fff; 
+}
+.titlebar-btn-close:hover { 
+    background: #e81123; 
+    color: #fff; 
+}
+
+/* 渐变背景 */
+.panel-gradient { background: linear-gradient(145deg, rgba(30,41,59,0.95) 0%, rgba(15,23,42,0.98) 50%, rgba(23,35,55,0.95) 100%); }
+.panel-gradient-left { background: linear-gradient(155deg, rgba(38,52,75,0.96) 0%, rgba(28,38,55,0.97) 25%, rgba(18,26,40,0.98) 55%, rgba(24,34,52,0.96) 85%, rgba(20,30,45,0.97) 100%); }
+.panel-inner { background: linear-gradient(160deg, rgba(30,41,59,0.6) 0%, rgba(15,23,42,0.85) 100%); }
+
+/* 星空动画 - 优化性能 */
+@keyframes twinkle { 
+    0%, 100% { opacity: 0.3; transform: scale(1); } 
+    50% { opacity: 0.9; transform: scale(1.1); } 
+}
+.star { 
+    animation: twinkle 3s ease-in-out infinite;
+    /* GPU加速星空动画 */
+    will-change: opacity, transform;
+    transform: translate3d(0, 0, 0);
+}
+.star:nth-child(4n) { animation-duration: 4s; animation-delay: 0.5s; }
+.star:nth-child(4n+1) { animation-duration: 2.5s; animation-delay: 1s; }
+.star:nth-child(4n+2) { animation-duration: 5s; animation-delay: 0s; }
+.star:nth-child(4n+3) { animation-duration: 3.5s; animation-delay: 0.2s; }
+
+/* 拖动时暂停星空动画，减少重绘 */
+body:active .star {
+    animation-play-state: paused;
+}
+
+/* 图表视图动画 */
+@keyframes chartViewEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chart-view-enter { animation: chartViewEnter 0.4s ease-out forwards; }
+
+/* 日历提示不换行 */
+.calendar-hint-nowrap { white-space: nowrap; }
+
+/* 日历面板 */
+.calendar-picker-panel {
+    background: linear-gradient(155deg, rgba(30,41,59,0.98) 0%, rgba(15,23,42,0.99) 40%, rgba(23,35,55,0.98) 70%, rgba(18,28,45,0.99) 100%);
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+}
+
+/* 日历网格 */
+.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-cell { padding: 8px; text-align: center; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+.cal-cell:hover { background: rgba(59, 130, 246, 0.2); }
+.cal-cell.selected { background: rgba(59, 130, 246, 0.8); color: white; }
+.cal-cell.in-range { background: rgba(59, 130, 246, 0.3); }
+.cal-cell.today { border: 1px solid rgba(59, 130, 246, 0.6); }
+.cal-cell.other-month { opacity: 0.5; color: rgba(148, 163, 184, 0.7) !important; background: rgba(51, 65, 85, 0.2); }
+.cal-cell.no-data {
+  opacity: 0.25;
+  filter: grayscale(0.2);
+}
+.cal-cell.wday { font-weight: 600; color: rgba(255,255,255,0.6); cursor: default; }
+
+/* 饼图+右侧统计整块：与下方卡片左边缘对齐（与 .app-card 同缩进） */
+.app-chart-row {
+    margin-left: 2%;
+    margin-right: 2%;
+    box-sizing: border-box;
+}
+
+/* 应用卡片：横幅略收窄，避免双击饼图/条状图高亮联动时 scale(1.02) 超框 */
+#appListContainer .app-card {
+    margin-left: 2%;
+    margin-right: 2%;
+    box-sizing: border-box;
+}
+
+/* 卡片聚焦效果（双击饼图/条状图联动高亮） */
+.app-card.card-focus {
+    background: rgba(59, 130, 246, 0.15) !important;
+    border-color: rgba(59, 130, 246, 0.5) !important;
+    transform: scale(1.02);
+    transition: all 0.3s ease;
+}
+
+/* 左侧应用列表：三段式对齐（应用名 | 时长 | 占比） */
+.app-list-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    min-width: 0;
+}
+.app-list-name-cell {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.app-list-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.app-list-duration {
+    min-width: 64px;
+    text-align: right;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.85);
+}
+.app-list-percent {
+    min-width: 56px;
+    text-align: right;
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+/* 饼图旁单行列表（应用/分类）：圆点 + 短名 - 时间 百分比 */
+.pie-top-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.pie-top-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+    font-size: 0.8125rem;
+}
+.pie-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+}
+.pie-line-text {
+    color: rgba(255, 255, 255, 0.9);
+}
+
+/* 右下仪表区：卡片网格 + 行动条（不碰 notify/rest 链路） */
+.dashboard-panel {
+    margin-bottom: 0;
+}
+.dashboard-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: auto auto;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+.dashboard-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: background 0.2s, border-color 0.2s;
+}
+.dashboard-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+.dashboard-card--kpi {
+    min-width: 0;
+}
+.dashboard-card--row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px 16px;
+}
+.dashboard-card-label {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.65);
+}
+.dashboard-card-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: #3B82F6;
+    line-height: 1.2;
+}
+.dashboard-card-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.dashboard-card-label-sm {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.6);
+}
+.dashboard-card-value-sm {
+    font-size: 14px;
+    font-weight: 600;
+    color: inherit;
+    opacity: 0.95;
+}
+.dashboard-action-bar {
+    margin-top: 2px;
+}
+.dashboard-action-bar .btn-primary {
+    width: 100%;
+    height: 46px;
+    min-height: 46px;
+    border-radius: 12px;
+    font-size: 1rem;
+    font-weight: 600;
+}
+@media (max-width: 619px) {
+    .dashboard-cards {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    .dashboard-card--row {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* 辅助类 - 用于日历箭头禁用状态 */
+.opacity-50 {
+    opacity: 0.5;
+}
+.cursor-not-allowed {
+    cursor: not-allowed;
+}

@@ -1,0 +1,1037 @@
+schema_version: 1
+name: eyecare_diagnostics_dictionary
+version: "0.1.0"
+generated_at: "2026-02-19"
+
+naming:
+  event_prefix: DIAG_
+  reason_prefix: E_
+  metric_prefix: DIAG_METRIC_
+
+policies:
+  - ALWAYS_ON
+  - DEBUG_ONLY
+  - DEPRECATED
+
+defaults:
+  throttle_window_s: 30
+  include_stack: false
+  pii_flag: none
+  owner: core
+
+runtime_controls:
+  normal_mode:
+    allow_policies: [ALWAYS_ON]
+    block_event_patterns: ["*_STAGE", "*_PIPE*", "*_POST*", "*_WINDOW_OP*", "DIAG_HTTP", "DIAG_UI_LOG", "DIAG_SNAPSHOT_HIT"]
+  debug_mode:
+    allow_global_all: false
+    default_modules: [notify, repo]
+    available_modules: [notify, rest, repo, dispatch, api, style, runtime, tray]
+    require_module_selection: true
+  exception_throttle:
+    reason_code_window_s: 30
+    max_full_stack_per_window: 1
+    count_remaining_only: true
+
+canonical_entries:
+  - event_code: DIAG_APP_START_OK
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    throttle_key: DIAG_APP_START_OK
+    required_kv: []
+    fallback_semantics: none
+    owner: startup
+    since_version: FN14
+
+  - event_code: DIAG_APP_EXIT_OK
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    throttle_key: DIAG_APP_EXIT_OK
+    required_kv: []
+    fallback_semantics: none
+    owner: shutdown
+    since_version: FN14
+
+  - event_code: DIAG_START
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_START
+    required_kv: []
+    fallback_semantics: none
+    owner: startup
+    since_version: FN14
+
+  - event_code: DIAG_CONTROLLER_INIT
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_CONTROLLER_INIT
+    required_kv: []
+    fallback_semantics: none
+    owner: runtime
+    since_version: FN14
+
+  - event_code: DIAG_CONTROLLER_READY
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_CONTROLLER_READY
+    required_kv: []
+    fallback_semantics: none
+    owner: runtime
+    since_version: FN14
+
+  - event_code: DIAG_FLASK_READY
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_FLASK_READY
+    required_kv: [elapsed_s]
+    fallback_semantics: continue_startup
+    owner: runtime
+    since_version: FN14
+
+  - event_code: DIAG_FLASK_TIMEOUT
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_FLASK_TIMEOUT
+    required_kv: []
+    fallback_semantics: continue_startup
+    owner: runtime
+    since_version: FN14
+
+  - event_code: DIAG_WINDOW_CREATED
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: style
+    throttle_key: DIAG_WINDOW_CREATED
+    required_kv: [api_port]
+    fallback_semantics: none
+    owner: ui_shell
+    since_version: FN14
+
+  - event_code: DIAG_GUI_LOOP
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_GUI_LOOP
+    required_kv: []
+    fallback_semantics: none
+    owner: ui_shell
+    since_version: FN14
+
+  - event_code: DIAG_PYWEBVIEW_START
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_PYWEBVIEW_START
+    required_kv: []
+    fallback_semantics: none
+    owner: ui_shell
+    since_version: FN14
+
+  - event_code: DIAG_PYWEBVIEW_EXIT
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_PYWEBVIEW_EXIT
+    required_kv: []
+    fallback_semantics: none
+    owner: ui_shell
+    since_version: FN14
+
+  - event_code: DIAG_DISPATCH_ILLEGAL
+    kind: event
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_key: DIAG_DISPATCH_ILLEGAL
+    include_stack: true
+    required_kv: [tid, gui_tid]
+    fallback_semantics: force_post_or_abort
+    owner: dispatcher
+    since_version: FN14
+
+  - event_code: DIAG_DISPATCH_REJECT
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_DISPATCH_REJECT
+    required_kv: []
+    fallback_semantics: drop_task
+    owner: dispatcher
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_SHOW
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_SHOW
+    required_kv: [mode, is_paused, dnd, blocked_reason]
+    fallback_semantics: none
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_CREATE_OK
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_CREATE_OK
+    required_kv: []
+    fallback_semantics: continue_show
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_SHOWN
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_SHOWN
+    required_kv: [mode, is_paused, dnd, blocked_reason]
+    fallback_semantics: shown
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_STYLE_APPLY_FAIL
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_NOTIFY_STYLE_APPLY_FAIL
+    required_kv: [reason_code]
+    fallback_semantics: degraded_style
+    owner: notify_style
+    since_version: FN14
+
+  - event_code: DIAG_REST_API_START
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_API_START
+    required_kv: [src]
+    fallback_semantics: none
+    owner: rest_api
+    since_version: FN14
+
+  - event_code: DIAG_REST_API_COMPLETE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_API_COMPLETE
+    required_kv: [src]
+    fallback_semantics: none
+    owner: rest_api
+    since_version: FN14
+
+  - event_code: DIAG_REST_API_SNOOZE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_API_SNOOZE
+    required_kv: [src]
+    fallback_semantics: none
+    owner: rest_api
+    since_version: FN14
+
+  - event_code: DIAG_REST_SHOW_ENTER
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_SHOW_ENTER
+    required_kv: [mode, source, screen_count]
+    fallback_semantics: none
+    owner: rest_overlay
+    since_version: FN14
+
+  - event_code: DIAG_REST_OVERLAY_CREATE_FAIL
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_REST_OVERLAY_CREATE_FAIL
+    required_kv: [screen_idx, reason_code]
+    fallback_semantics: partial_overlay
+    owner: rest_overlay
+    since_version: FN14
+
+  - event_code: DIAG_REST_OVERLAY_CREATED
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_OVERLAY_CREATED
+    required_kv: [screen_idx]
+    fallback_semantics: none
+    owner: rest_overlay
+    since_version: FN14
+
+  - event_code: DIAG_REST_GUARD_LOCK
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_GUARD_LOCK
+    required_kv: []
+    fallback_semantics: none
+    owner: rest_guard
+    since_version: FN14
+
+  - event_code: DIAG_REST_GUARD_COOLDOWN_START
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_GUARD_COOLDOWN_START
+    required_kv: []
+    fallback_semantics: none
+    owner: rest_guard
+    since_version: FN14
+
+  - event_code: DIAG_REST_GUARD_UNLOCK
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    throttle_key: DIAG_REST_GUARD_UNLOCK
+    required_kv: []
+    fallback_semantics: none
+    owner: rest_guard
+    since_version: FN14
+
+  - event_code: DIAG_REST_GUARD_BLOCK
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    throttle_key: DIAG_REST_GUARD_BLOCK
+    required_kv: [reason_code]
+    fallback_semantics: none
+    owner: rest_guard
+    since_version: FN14
+
+  - event_code: DIAG_STOP_BEGIN
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_STOP_BEGIN
+    required_kv: []
+    fallback_semantics: none
+    owner: shutdown
+    since_version: FN14
+
+  - event_code: DIAG_STOP_TICK_JOIN
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    throttle_key: DIAG_STOP_TICK_JOIN
+    required_kv: [result]
+    fallback_semantics: continue_stop
+    owner: shutdown
+    since_version: FN14
+
+  - event_code: DIAG_REPO_CLOSE_BEGIN
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: repo
+    throttle_key: DIAG_REPO_CLOSE_BEGIN
+    required_kv: []
+    fallback_semantics: none
+    owner: repo
+    since_version: FN14
+
+  - event_code: DIAG_REPO_CLOSE_OK
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: repo
+    throttle_key: DIAG_REPO_CLOSE_OK
+    required_kv: [finalized, wal_pending, need_merge]
+    fallback_semantics: clean_exit
+    owner: repo
+    since_version: FN14
+
+  - event_code: DIAG_REPO_CLOSE_FAIL
+    kind: event
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_key: DIAG_REPO_CLOSE_FAIL
+    include_stack: true
+    required_kv: [finalized, wal_pending, need_merge, reason_code]
+    fallback_semantics: write_exit_state_need_merge
+    owner: repo
+    since_version: FN14
+
+  - event_code: DIAG_EXIT_STATE_WRITE
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_EXIT_STATE_WRITE
+    required_kv: [need_merge]
+    fallback_semantics: recovery_on_next_start
+    owner: shutdown
+    since_version: FN14
+
+  - event_code: DIAG_EXIT
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_EXIT
+    required_kv: [reason]
+    fallback_semantics: natural_exit
+    owner: shutdown
+    since_version: FN14
+
+  - event_code: DIAG_EXIT_STEP
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_EXIT_STEP
+    required_kv: [step, ok]
+    fallback_semantics: continue_best_effort
+    owner: shutdown
+    since_version: FN14
+
+  - event_code: DIAG_EXCEPTION
+    kind: event
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_key: DIAG_EXCEPTION
+    include_stack: true
+    required_kv: [phase, impact, reason_code]
+    fallback_semantics: continue_or_degrade
+    owner: common
+    since_version: FN14
+
+  - event_code: DIAG_UNCAUGHT
+    kind: event
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_key: DIAG_UNCAUGHT
+    include_stack: true
+    required_kv: []
+    fallback_semantics: process_may_exit
+    owner: common
+    since_version: FN14
+
+  - event_code: DIAG_UNCAUGHT_THREAD
+    kind: event
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_key: DIAG_UNCAUGHT_THREAD
+    include_stack: true
+    required_kv: [thread_name, thread_ident, last_known_phase]
+    fallback_semantics: thread_may_exit
+    owner: common
+    since_version: FN14
+
+  - event_code: DIAG_METRIC_DISPATCH
+    kind: metric
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_METRIC_DISPATCH
+    throttle_window_s: 60
+    required_kv: [queue_len, post_count, reject_count, illegal_count, max_queue_len, dispatch_ms_last, dispatch_ms_p95_5m]
+    fallback_semantics: none
+    owner: dispatcher
+    since_version: FN14
+
+  - event_code: DIAG_METRIC_NOTIFY
+    kind: metric
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_METRIC_NOTIFY
+    throttle_window_s: 60
+    required_kv: [last_show_ts, last_style_ok_ts, degraded_mode, show_fail_count, notify_show_ms_last, notify_show_ms_p95_5m]
+    fallback_semantics: none
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_METRIC_REST
+    kind: metric
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_METRIC_REST
+    throttle_window_s: 60
+    required_kv: [last_enter_ts, show_fail_count, overlay_create_ms_last, overlay_create_ms_p95_5m]
+    fallback_semantics: none
+    owner: rest_overlay
+    since_version: FN14
+
+  - event_code: DIAG_METRIC_REPO
+    kind: metric
+    level: INFO
+    policy: DEBUG_ONLY
+    module: repo
+    throttle_key: DIAG_METRIC_REPO
+    throttle_window_s: 60
+    required_kv: [wal_pending, last_flush_ok_ts, last_close_ok_ts, merge_fail_count, repo_close_ms_last, repo_close_ms_p95_5m]
+    fallback_semantics: none
+    owner: repo
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_STAGE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_STAGE
+    required_kv: [stage]
+    fallback_semantics: none
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_HWND_ALPHA
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_HWND_ALPHA
+    throttle_window_s: 2
+    required_kv: [where, hwnd]
+    fallback_semantics: none
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_NOTIFY_LAYERED_RESTORE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_LAYERED_RESTORE
+    required_kv: [hwnd, ex_restored]
+    fallback_semantics: none
+    owner: notify
+    since_version: FN14
+
+  - event_code: DIAG_REST_STAGE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: rest
+    throttle_key: DIAG_REST_STAGE
+    required_kv: [stage]
+    fallback_semantics: none
+    owner: rest_overlay
+    since_version: FN14
+
+  - event_code: DIAG_STYLE_STAGE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: style
+    throttle_key: DIAG_STYLE_STAGE
+    required_kv: [kind, overlay_id, stage]
+    fallback_semantics: none
+    owner: style
+    since_version: FN14
+
+  - event_code: DIAG_DISPATCH_STAGE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_DISPATCH_STAGE
+    required_kv: [stage]
+    fallback_semantics: none
+    owner: dispatch
+    since_version: FN14
+
+  - event_code: DIAG_API_STAGE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: api
+    throttle_key: DIAG_API_STAGE
+    required_kv: [stage]
+    fallback_semantics: none
+    owner: api
+    since_version: FN14
+
+  - event_code: DIAG_TRAY_INIT
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_TRAY_INIT
+    required_kv: [mode]
+    fallback_semantics: none
+    owner: tray
+    since_version: FN14
+
+  - event_code: DIAG_TRAY_MODE_CHANGE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: dispatch
+    throttle_key: DIAG_TRAY_MODE_CHANGE
+    throttle_window_s: 5
+    required_kv: [from_mode, to_mode]
+    fallback_semantics: none
+    owner: tray
+    since_version: FN14
+
+  - event_code: DIAG_UNKNOWN_EVENT
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_UNKNOWN_EVENT
+    required_kv: [event_code, count]
+    fallback_semantics: none
+    owner: core
+    since_version: FN14
+
+  # 状态机影子模式（Phase 1）：仅记录迁移，不驱动行为
+  - event_code: DIAG_SM_TRANSITION
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: runtime
+    throttle_key: DIAG_SM_TRANSITION
+    required_kv: [machine, from_state, to_state, event, result]
+    fallback_semantics: none
+    owner: state_machine
+    since_version: FN14
+
+  - event_code: DIAG_SM_REJECT
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_SM_REJECT
+    required_kv: [machine, reason_code]
+    fallback_semantics: drop_task
+    owner: state_machine
+    since_version: FN14
+
+  - event_code: DIAG_SM_DEFER
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    throttle_key: DIAG_SM_DEFER
+    required_kv: [machine, reason_code]
+    fallback_semantics: defer_task
+    owner: state_machine
+    since_version: FN14
+
+reason_codes:
+  - code: E_NOTIFY_FIND_HWND
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: notify
+  - code: E_NOTIFY_STYLE_APPLY
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: notify_style
+  - code: E_REST_OVERLAY_BG_SET
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: rest_overlay
+  - code: E_STYLE_APPLY_WEBVIEW2
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: style
+  - code: E_REPO_WAL_APPEND
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: repo
+  - code: E_REPO_MERGE
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: repo
+  - code: E_REPO_CLOSE_TIMEOUT
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_DISPATCH_TASK_FAIL
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: dispatcher
+  - code: E_API_SNAPSHOT_FAIL
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: api_server
+  - code: E_NOTIFY_SOUND_OSERROR
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_NOTIFY_SOUND_UNKNOWN
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_HANG_DUMP_FAILED
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_DEBUG_SESSION_WRITE
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_SINGLE_INSTANCE_MSGBOX
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_WEBVIEW_DRAG_REGION_SETTING
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_API_SET_VISIBLE_CB
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_API_SET_VISIBLE_CB_MISSING
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_API_SET_DISPATCHER
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_API_SET_DISPATCHER_MISSING
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_NOTIFY_CLEAR_LAST_SHOWN
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_MARK_REST_NOTIFIED
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_REST_LAZY_INIT_OVERLAYS
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_REST_SET_PUMP_FN
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_METRIC_EMIT_LOOP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
+  - code: E_REPO_FLUSH
+    level: ERROR
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: true
+    owner: repo
+  - code: E_EXIT_STATE_WRITE
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: controller
+  - code: E_SAVE_CONFIG
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: controller
+  - code: E_CONTROLLER_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: controller
+  - code: E_USAGE_ROLLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: controller
+  - code: E_REPO_PARSE_LOCAL_DATE
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_REPO_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_REPO_BAD_APPS_SKIP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_REPO_BAD_EVENT_SKIP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_REPO_BAD_HOURLY_SKIP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_REPO_BAD_MINUTE_SKIP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_REPO_BAD_TIMELINE_SKIP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: repo
+  - code: E_TRAY_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: tray
+  - code: E_API_REST_EMIT
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: api_rest
+  - code: E_REST_READY_CALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: rest
+  - code: E_REST_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: rest
+  - code: E_REST_OVERLAY_DESTROY
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: rest
+  - code: E_NOTIFY_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_WINDOW_HIDE
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_EVAL_JS
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_POST_GUI
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_BEGININVOKE
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_SHOW
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_ACRYLIC
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_DO_SHOW
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_SHOW_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_SHOW_STEP
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_STYLE_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: style
+  - code: E_WIN_EFFECT_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: win_effects
+  - code: E_NOTIFY_ALPHA
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: win_effects
+  - code: E_WIN_ICON_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: win_icon
+  - code: E_MAIN_FALLBACK
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: main
+
+aliases:
+  DIAG_FLASK_WAIT: DIAG_CONTROLLER_INIT
+  DIAG_FLASK_LISTEN: DIAG_CONTROLLER_INIT
+  DIAG_WINDOW_CREATE: DIAG_WINDOW_CREATED
+  DIAG_SYS_TRANSPARENCY: DIAG_START
+  DIAG_STYLE_APPLY_START: DIAG_STYLE_STAGE
+  DIAG_STYLE_APPLY_OK: DIAG_STYLE_STAGE
+  DIAG_STYLE_APPLY_FAIL: DIAG_STYLE_STAGE
+  DIAG_STYLE_DEGRADED: DIAG_STYLE_STAGE
+  DIAG_NOTIFY_MGR_READY: DIAG_NOTIFY_STAGE
+  DIAG_TRAY_OK: DIAG_DISPATCH_STAGE
+  DIAG_TRAY_UNAVAILABLE: DIAG_DISPATCH_STAGE
+  DIAG_TRAY_FALLBACK: DIAG_DISPATCH_STAGE
+  DIAG_REST_SHOW_FN_NOT_SET: DIAG_REST_STAGE
+  DIAG_REST_OVERLAY_PERF: DIAG_REST_OVERLAY_CREATED
+  DIAG_STYLE_READY: DIAG_STYLE_STAGE
+  HARD_NOTIFY_FADE_BEGIN: DIAG_NOTIFY_STAGE
+  HARD_NOTIFY_FADE_END: DIAG_NOTIFY_STAGE
+  HARD_NOTIFY_FADE_FAIL: DIAG_NOTIFY_STAGE
+  HARD_NOTIFY_ALPHA_FAIL: DIAG_NOTIFY_STAGE
+  HARD_NOTIFY_FRONTEND: DIAG_API_STAGE
+  DIAG_NOTIFY_PIPE: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_BARRIER: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_M0: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_READY: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_CREATE_START: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_PRELOAD_DEFER: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_PRELOAD_START: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_FIRST_FRAME: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_FRAME_PROBE: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_STYLE_APPLY_START: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_STYLE_APPLY_OK: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_CONTROLLER_WAIT: DIAG_NOTIFY_STAGE
+  DIAG_NOTIFY_LATE_SET: DIAG_NOTIFY_STAGE
+
+  DIAG_APPLY_BOUNDS: DIAG_REST_STAGE
+  DIAG_APPLY_BOUNDS_FAIL: DIAG_REST_STAGE
+  DIAG_DELAYED_REPAINT: DIAG_REST_STAGE
+  DIAG_DELAYED_REPAINT_FAIL: DIAG_REST_STAGE
+  DIAG_PRECISE: DIAG_REST_STAGE
+  DIAG_PRECISE_FAIL: DIAG_REST_STAGE
+  DIAG_SHOW_OVERLAY: DIAG_REST_STAGE
+  DIAG_SCREEN_BOUNDS: DIAG_REST_STAGE
+  DIAG_LAZY_INIT: DIAG_REST_STAGE
+  DIAG_REST_SHOW_COOLDOWN: DIAG_REST_STAGE
+  DIAG_REST_OVERLAY_LOG: DIAG_REST_STAGE
+
+  DIAG_HTTP: DIAG_API_STAGE
+  DIAG_SNAPSHOT_HIT: DIAG_API_STAGE
+  DIAG_UI_LOG: DIAG_API_STAGE
+
+  DIAG_DISPATCH_POST: DIAG_DISPATCH_STAGE
+  DIAG_DISPATCH_WINDOW_OP: DIAG_DISPATCH_STAGE
+  DIAG_DISPATCH_DRAIN: DIAG_DISPATCH_STAGE
+  DIAG_DISPATCH_UNKNOWN: DIAG_DISPATCH_STAGE
+  DIAG_DISPATCH_TRAY_CALLBACK: DIAG_DISPATCH_STAGE
+  DIAG_DISPATCH_TRAY_QUIT: DIAG_DISPATCH_STAGE
+  DIAG_TRAY_INIT: DIAG_DISPATCH_STAGE
+  DIAG_TRAY_MODE_CHANGE: DIAG_DISPATCH_STAGE
+
+# 退役里程碑：v1.2 计划移除；仅作历史兼容占位。
+deprecated_placeholders:
+  - DIAG_XXX
+  - DIAG_MIGRATION_DISPUTE_REPORT
