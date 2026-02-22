@@ -1,40 +1,44 @@
-# ===== Python cache =====
-__pycache__/
-*.py[cod]
-*$py.class
+# runtime data / logs / diagnostics
+/user_data/debug.log*
+/user_data/wal/
+/user_data/usage_daily/
+/user_data/app_icons/
+/user_data/diagnostics/
+/user_data/*.db
+/user_data/*.db-wal
+/user_data/*.db-shm
+/user_data/events/
+/user_data/minute_usage/
+/user_data/config.json
+/user_data/app_categories.json
+/user_data/import_log.json
+/user_data/app_paths.json
+/user_data/export_seq.txt
+/user_data/device_id.txt
+/user_data/exit_state.json
+/user_data/transfer_reports/
 
-# ===== Virtual environments =====
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# virtual environments
 .venv/
 venv/
-ENV/
-env/
 
-# ===== IDE / editor =====
+# packaging/build
+/dist/
+/build/
+
+# local AI/editor metadata
+.cursor/
+.specstory/
+
+# IDE
 .vscode/
 .idea/
-
-# ===== OS junk =====
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# ===== Logs =====
-*.log
-logs/
-
-# ===== Runtime data (your app) =====
-data/
-import_log.json
-float_config.json
-*_config.json
-*_log.json
-
-# ===== Build / packaging artifacts =====
-dist/
-build/
-*.spec
-
-# ===== Test / coverage =====
-.pytest_cache/
-.coverage
-htmlcov/
+*.swp
+*.swo
+*~
