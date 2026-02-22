@@ -8,6 +8,8 @@
 
 自动追踪你的屏幕使用时间，在连续用眼达到阈值时提醒你休息，帮助你养成健康的用眼习惯。
 
+<img width="2748" height="1578" alt="main_window png" src="https://github.com/user-attachments/assets/554ec6d4-e69d-4ed8-8bda-fe1b34c28f4e" />
+
 ---
 
 ## ✨ 核心功能
