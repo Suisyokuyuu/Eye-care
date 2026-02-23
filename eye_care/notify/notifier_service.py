@@ -15,12 +15,11 @@ class NotifierService:
     def __init__(
         self,
         *,
-        controller_getter,
+        controller,
         notification_manager,
         poll_interval_s: float = 1.0,
     ) -> None:
-        # 使用 controller_getter 按需获取最新 controller，避免启动竞态时固定快照
-        self._controller_getter = controller_getter
+        self._controller = controller
         self._manager = notification_manager
         self._poll_interval_s = max(0.1, float(poll_interval_s))
         self._stop = threading.Event()
@@ -44,9 +43,7 @@ class NotifierService:
     def _run_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                controller = self._controller_getter() if callable(self._controller_getter) else None
-                if controller is not None:
-                    _, extra = controller.snapshot_today(mark_prompted=False)
+                _, extra = self._controller.snapshot_today(mark_prompted=False)
                 if extra:
                     self._manager.on_snapshot(extra)
             except Exception:

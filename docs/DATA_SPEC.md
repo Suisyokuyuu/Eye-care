@@ -92,10 +92,6 @@
 - `GET/POST /api/categories`
 - `POST /api/categories/delete`
 
-> **鉴权说明（与代码保持一致）**：  
-> - 所有写接口（`POST/PUT/PATCH/DELETE`）在代码层都通过 `X-EYECare-Token` Header 做鉴权，Token 由 `GET /api/auth/token` 提供。  
-> - 本节仅列数据口径与字段，不再重复展开鉴权逻辑；实际调用时需确保 Header 携带正确的 `X-EYECare-Token`，否则会返回 401 或被拒绝。
-
 ## 5) 一致性与恢复
 
 - `flush()`：将内存 WAL 缓冲刷入 WAL 文件。

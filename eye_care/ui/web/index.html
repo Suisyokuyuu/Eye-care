@@ -212,7 +212,6 @@
                 <button id="closeSettingsModal" class="text-gray-400 hover:text-white"><i class="fa fa-times text-xl"></i></button>
             </div>
             <div class="space-y-4">
-                <!-- 系统设置区域 -->
                 <div class="space-y-2">
                     <label class="block text-sm font-medium text-gray-300">无操作多久暂停计时</label>
                     <p class="text-xs text-gray-400">当鼠标/键盘在连续一段时间内没有任何操作时，程序会认为你暂时离开，停止累计屏幕时间；恢复操作后继续计时。</p>
@@ -222,30 +221,6 @@
                     </div>
                     <p class="text-xs text-gray-500">设得太短可能导致频繁暂停；设得太长可能把离开时间也算进去。</p>
                 </div>
-                <div class="space-y-2">
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="settingsLaunchAtLogin" class="rounded border-white/20 bg-dark-300 text-primary">
-                        <span>开机自启动</span>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="settingsStartupDnd" class="rounded border-white/20 bg-dark-300 text-primary">
-                        <span>启动时默认勿扰</span>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="settingsStartupShow" class="rounded border-white/20 bg-dark-300 text-primary">
-                        <span>启动时显示主界面</span>
-                    </label>
-                </div>
-                <hr class="border-white/10">
-                <!-- 启用休息提醒功能开关 -->
-                <div class="space-y-2">
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="settingsNotifyEnabled" class="rounded border-white/20 bg-dark-300 text-primary" checked>
-                        <span>启用休息提醒功能</span>
-                    </label>
-                </div>
-                <!-- 休息设置区域（仅在开关开启时显示） -->
-                <div id="restSettingsGroup" class="space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div class="space-y-2">
                         <label class="block text-sm font-medium text-gray-300">休息提醒间隔</label>
@@ -272,18 +247,25 @@
                         <span class="text-sm text-gray-400">秒（0 表示不自动隐藏）</span>
                     </div>
                 </div>
-                    <div class="space-y-2">
-                        <label class="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" id="settingsNotifySound" class="rounded border-white/20 bg-dark-300 text-primary" checked>
-                            <span>启用通知提示音</span>
-                        </label>
-                    </div>
                 <div class="space-y-2">
                     <label class="flex items-center gap-3 cursor-pointer">
                         <input type="checkbox" id="settingsRestEndSound" class="rounded border-white/20 bg-dark-300 text-primary" checked>
                         <span>启用休息结束提示音</span>
                     </label>
                 </div>
+                <div class="pt-2 space-y-2 border-t border-white/10 pt-4">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="settingsLaunchAtLogin" class="rounded border-white/20 bg-dark-300 text-primary">
+                        <span>开机自启动</span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="settingsStartupDnd" class="rounded border-white/20 bg-dark-300 text-primary">
+                        <span>启动时默认勿扰</span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="settingsStartupShow" class="rounded border-white/20 bg-dark-300 text-primary">
+                        <span>启动时显示主界面</span>
+                    </label>
                 </div>
             </div>
             <div class="flex gap-2 mt-6">

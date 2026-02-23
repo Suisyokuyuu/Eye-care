@@ -524,39 +524,6 @@ canonical_entries:
     owner: notify
     since_version: FN14
 
-  - event_code: DIAG_NOTIFY_SERVICE_SKIPPED
-    kind: event
-    level: INFO
-    policy: ALWAYS_ON
-    module: notify
-    throttle_key: DIAG_NOTIFY_SERVICE_SKIPPED
-    required_kv: [has_controller, notify_enabled]
-    fallback_semantics: degraded_feature
-    owner: notify
-    since_version: FN14
-
-  - event_code: DIAG_NOTIFY_SERVICE_START
-    kind: event
-    level: INFO
-    policy: DEBUG_ONLY
-    module: notify
-    throttle_key: DIAG_NOTIFY_SERVICE_START
-    required_kv: [reason, notify_enabled]
-    fallback_semantics: continue_startup
-    owner: notify
-    since_version: FN14
-
-  - event_code: DIAG_NOTIFY_SOUND
-    kind: event
-    level: INFO
-    policy: DEBUG_ONLY
-    module: notify
-    throttle_key: DIAG_NOTIFY_SOUND
-    required_kv: [sound_path, exists]
-    fallback_semantics: none
-    owner: notify
-    since_version: FN14
-
   - event_code: DIAG_REST_STAGE
     kind: event
     level: INFO
@@ -632,17 +599,6 @@ canonical_entries:
     required_kv: [event_code, count]
     fallback_semantics: none
     owner: core
-    since_version: FN14
-
-  - event_code: DIAG_HANG_DUMP
-    kind: event
-    level: INFO
-    policy: ALWAYS_ON
-    module: runtime
-    throttle_key: DIAG_HANG_DUMP
-    required_kv: [path]
-    fallback_semantics: none
-    owner: runtime
     since_version: FN14
 
   # 状态机影子模式（Phase 1）：仅记录迁移，不驱动行为
@@ -742,30 +698,6 @@ reason_codes:
     level: WARNING
     policy: ALWAYS_ON
     throttle_window_s: 30
-    include_stack: false
-    owner: runtime
-  - code: E_NOTIFY_CFG_NO_CONTROLLER
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: false
-    owner: notify
-  - code: E_NOTIFY_CONFIG_CB_SET
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: false
-    owner: notify
-  - code: E_NOTIFY_CONFIG_CB_NO_CONTROLLER
-    level: INFO
-    policy: ALWAYS_ON
-    throttle_window_s: 300
-    include_stack: false
-    owner: notify
-  - code: E_NOTIFY_RUNTIME_INIT
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 60
     include_stack: false
     owner: runtime
   - code: E_HANG_DUMP_FAILED
@@ -954,54 +886,6 @@ reason_codes:
     throttle_window_s: 30
     include_stack: false
     owner: notify
-  - code: E_NOTIFY_AFTER_FADE
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
-  - code: E_NOTIFY_FADE_RUNNER
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
-  - code: E_NOTIFY_HIDE_TIMEOUT
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: false
-    owner: notify
-  - code: E_NOTIFY_TIMEOUT_FALLBACK
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
-  - code: E_NOTIFY_AFTER_SIMPLE_HIDE
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
-  - code: E_NOTIFY_AFTER_SIMPLE_FADE
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
-  - code: E_NOTIFY_SCHEDULE_AFTER_FADE
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
-  - code: E_NOTIFY_TIMEOUT_SIMPLE
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
   - code: E_NOTIFY_WINDOW_HIDE
     level: WARNING
     policy: ALWAYS_ON
@@ -1074,18 +958,6 @@ reason_codes:
     throttle_window_s: 30
     include_stack: false
     owner: win_effects
-  - code: E_NOTIFY_SET_ALPHA
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: win_effects
-  - code: E_NOTIFY_HOST_FADE_OUT
-    level: WARNING
-    policy: ALWAYS_ON
-    throttle_window_s: 30
-    include_stack: true
-    owner: notify
   - code: E_WIN_ICON_FALLBACK
     level: WARNING
     policy: ALWAYS_ON

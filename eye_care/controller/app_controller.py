@@ -74,9 +74,6 @@ class AppController:
         self._checkpoint_inflight = False
         self._checkpoint_lock = threading.Lock()
 
-        # runtime lock：保护 _app_paths / rest 状态等运行期字段
-        self._lock = threading.RLock()
-
         # transient runtime states (not persisted)
         self._last_idle_s: int = 0
         self._prev_idle_s: int = 0
@@ -124,6 +121,8 @@ class AppController:
         self._rest_entry_guard = RestEntryGuardMachine(log)
         self._rest_guard_cooldown_timer: Optional[threading.Timer] = None
 
+        self._lock = threading.RLock()
+
         # tick timing (use monotonic to avoid drift when loop is slower than interval)
         self._tick_mono_last: float = 0.0
         self._tick_accum: float = 0.0
@@ -151,21 +150,9 @@ class AppController:
             if p.exists():
                 raw = json.loads(p.read_text(encoding="utf-8") or "{}")
                 if isinstance(raw, dict):
-                    stale: list[str] = []
                     for k, v in raw.items():
-                        if not k or not v:
-                            continue
-                        app_short = str(k)
-                        exe_path = str(v)
-                        exe = Path(exe_path)
-                        if exe.exists():
-                            self._app_paths[app_short] = exe_path
-                        else:
-                            stale.append(app_short)
-                    if stale:
-                        log.info("app_paths: removed %d stale entries on load", len(stale))
-                        # 冷启动 GC 后立即持久化，确保磁盘上的 app_paths.json 收敛
-                        self._persist_app_paths()
+                        if k and v:
+                            self._app_paths[str(k)] = str(v)
         except Exception:
             log.exception("load app_paths failed")
 
@@ -175,34 +162,12 @@ class AppController:
         try:
             with self._lock:
                 copy = dict(self._app_paths)
+            if not copy:
+                return
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(copy, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             log.exception("persist app_paths failed")
-
-    def _cleanup_app_paths_runtime(self) -> int:
-        """运行期 GC：移除已不存在的 exe 路径，避免图标 API 长期命中无效路径。"""
-        with self._lock:
-            items = list(self._app_paths.items())
-        stale: list[str] = []
-        for app_short, exe_path in items:
-            try:
-                if exe_path and not Path(exe_path).exists():
-                    stale.append(app_short)
-            except Exception:
-                # exists() 异常视为非致命，不中断整体 GC
-                continue
-        if not stale:
-            return 0
-        with self._lock:
-            for app_short in stale:
-                self._app_paths.pop(app_short, None)
-        try:
-            self._persist_app_paths()
-        except Exception:
-            log.exception("cleanup app_paths runtime persist failed")
-        log.info("app_paths: removed %d stale entries at runtime", len(stale))
-        return len(stale)
 
     # ----- lifecycle -----
     def start(self) -> None:
@@ -419,21 +384,17 @@ class AppController:
 
         口径（按用户验收口径修复）：
         - 跳过不算完成：不清零连续用眼。
-        - 跳过后仍然保持"需要休息"状态（due=True），只是进入冷却，冷却后再次弹提醒。
+        - 跳过后仍然保持“需要休息”状态（due=True），只是进入冷却，冷却后再次弹提醒。
         """
         now = time.time()
         with self._lock:
             # if pressing ESC during overlay, exit resting state
             self._is_resting = False
             # keep _rest_due as-is (usually True when prompt fired)
-            # 标记为已提醒：避免冷却后每分钟连发；下一次提醒在"下一轮阈值"后再触发
+            # 标记为已提醒：避免冷却后每分钟连发；下一次提醒在“下一轮阈值”后再触发
             self._rest_notified = True
             self._rest_snooze_until = float(now + MIN_REMIND_COOLDOWN_S)
-            # [FIX] 修复计算逻辑：点击"稍后"后，需要再工作一个完整的提醒间隔才再次提醒
-            # 旧逻辑：((int(self._cont_work_s) // 60) + 1) * 60 会导致只等1分钟就再次提醒
-            # 新逻辑：当前工作时间 + 提醒阈值，确保等待完整间隔
-            thr_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
-            self._rest_next_prompt_work_s = int(self._cont_work_s) + int(max(60, thr_s))
+            self._rest_next_prompt_work_s = ((int(self._cont_work_s) // 60) + 1) * 60
 
         self._emit_event(name="rest_snooze", payload={"skip_cycle": True, "ack_work_s": int(self._cont_work_s)})
         # [FIX] 补偿进入：rest 结束后若用户仍 idle，补偿进入 auto_idle（但不 rollback）
@@ -522,13 +483,6 @@ class AppController:
                 self._rest_due = False
                 self._rest_notified = False
                 self._rest_snooze_until = 0.0
-
-        # 调用通知配置变更回调（如果已注册）
-        if hasattr(self, "_notify_config_callback") and callable(self._notify_config_callback):
-            try:
-                self._notify_config_callback()
-            except Exception:
-                log.exception("notify config callback failed")
 
     # ----- debug -----
     def set_debug_notify(self, on: bool) -> None:
@@ -736,27 +690,6 @@ class AppController:
     def get_app_paths(self) -> dict[str, str]:
         with self._lock:
             return dict(self._app_paths)
-
-    def remove_app_path(self, app_short: str, exe_path: str) -> bool:
-        """从 app_paths 中移除指定 app_short 条目（需路径一致），并持久化到磁盘。
-
-        用于 /api/icon 在检测到 exe 已被删除时做就地自清理。
-        """
-        app_short = str(app_short or "")
-        exe_path = str(exe_path or "")
-        if not app_short or not exe_path:
-            return False
-        with self._lock:
-            current = self._app_paths.get(app_short)
-            if not current or str(current) != exe_path:
-                return False
-            self._app_paths.pop(app_short, None)
-        try:
-            self._persist_app_paths()
-        except Exception:
-            log.exception("remove_app_path persist failed")
-        log.info("app_paths: removed stale entry app=%s", app_short)
-        return True
 
     def force_flush(self) -> None:
         self.repo.flush()
@@ -981,13 +914,7 @@ class AppController:
 
                 if now - self._last_app_paths_persist >= FLUSH_INTERVAL_S:
                     self._last_app_paths_persist = now
-                    removed = 0
-                    try:
-                        removed = self._cleanup_app_paths_runtime()
-                    except Exception:
-                        log.exception("cleanup app_paths runtime failed")
-                    if removed == 0:
-                        self._persist_app_paths()
+                    self._persist_app_paths()
 
                 # periodic checkpoint (low-frequency)
                 if CHECKPOINT_INTERVAL_S and (now - self._last_checkpoint >= CHECKPOINT_INTERVAL_S):
