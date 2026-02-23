@@ -216,6 +216,45 @@ canonical_entries:
     owner: notify_style
     since_version: FN14
 
+  - event_code: DIAG_NOTIFY_ACK_POST_FAILED
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_NOTIFY_ACK_POST_FAILED
+    required_kv: [op]
+    fallback_semantics: degraded_feature
+    owner: notify
+    since_version: FN15
+
+  - event_code: DIAG_NOTIFY_ACK_NO_NATIVE
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_key: DIAG_NOTIFY_ACK_NO_NATIVE
+    required_kv: [op]
+    fallback_semantics: degraded_feature
+    owner: notify
+    since_version: FN15
+
+  - event_code: DIAG_NOTIFY_ACK_STATE
+    kind: event
+    level: INFO
+    policy: DEBUG_ONLY
+    module: notify
+    throttle_key: DIAG_NOTIFY_ACK_STATE
+    throttle_window_s: 10
+    required_kv:
+      - show_inflight
+      - show_deferred_until_ready
+      - initialized
+      - window_exists
+      - native_exists
+      - show_session_id
+      - prompt_key_exists
+    fallback_semantics: none
+    owner: notify
+    since_version: FN15
+
   - event_code: DIAG_REST_API_START
     kind: event
     level: INFO
@@ -1026,6 +1065,12 @@ reason_codes:
     throttle_window_s: 30
     include_stack: false
     owner: notify
+  - code: E_NOTIFY_M0_BEGININVOKE_STRICT
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
   - code: E_NOTIFY_M0_SHOW
     level: WARNING
     policy: ALWAYS_ON
@@ -1039,6 +1084,12 @@ reason_codes:
     include_stack: false
     owner: notify
   - code: E_NOTIFY_M0_DO_SHOW
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: notify
+  - code: E_NOTIFY_M0_DO_SHOW_REPOST_FAIL
     level: WARNING
     policy: ALWAYS_ON
     throttle_window_s: 30
