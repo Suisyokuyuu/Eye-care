@@ -1,5 +1,5 @@
 ---
-title: 卡死场景测试说明（hang_scenarios）
+title: 卡死场景测试说明（hang_scenarios，适用应用版本 V1.0.2）
 ---
 
 本文件聚焦 `tests/hang_scenarios/` 目录下的卡死场景测试设计，基于当前测试代码整理，并参考《卡》计划文档（`.cursor/plans/卡_9678f5ad.plan.md`）中的场景定义与目标。
@@ -12,32 +12,39 @@ title: 卡死场景测试说明（hang_scenarios）
   - 位置：`tests/hang_scenarios/conftest.py`
   - 职责：
     - 通过 `main.py` 启动 EyE Care 应用；
-    - 为每次运行创建独立的 `user_data_test_<timestamp>` 目录；
+    - 为每次运行创建独立的 `user_data_test_<timestamp>_<pid>_<uniq>` 目录，降低并发/快速重跑时的数据目录复用概率；
     - 设置 `EYECARE_DEBUG`、`EYECARE_API_PORT` 等环境变量；
     - 在测试会话结束时终止/杀掉子进程。
-  - 当前实现中的 `wait_for_ready` 使用简单的轮询 + sleep，占位将来更精确的 HTTP 健康检查逻辑。
+  - `wait_for_ready` 基于 `GET /api/health` 的 HTTP 探活，并要求返回体中包含 `{"ok": true}`，避免仅以“进程存活”作为就绪判据。
 
 - **HangDetector**
   - 位置：`tests/hang_scenarios/conftest.py`
-  - 当前能力：
-    - 持有 `debug.log` 路径；
-    - 提供 `wait_healthy_or_timeout(timeout_s, mode="simple_timeout")`，仅基于时间窗口判断“是否在预期时间内完成”。
-  - 规划扩展（来自《卡》与 DEADLOCK_ANALYSIS）：
-    - 解析 `DIAG_METRIC_DISPATCH`，识别 GUI 调度心跳是否前进；
-    - 结合 `queue_len`、`max_queue_len`、心跳间隔等指标判断队列压力与长期停摆；
-    - 捕获 `debug_hang` 日志与异常关键字，用于辅助定位。
+  - 当前能力（基于 `eye_care.diagnostics.notify_hang_analyzer`）：
+    - 始终根据当前 AppRunner.data_dir 解析 `debug.log`；
+    - 提供 `wait_healthy_or_timeout(timeout_s, mode="generic"|"notify_hide", require_min_hide_pairs=None|int)`：
+      - 在给定时间内等待 `debug.log` 出现；
+      - 使用 `analyze_debug_log_file` 解析 DIAG_SM_TRANSITION / DIAG_METRIC_* / 与简化淡出链路相关的 DIAG_EXCEPTION；
+      - 如存在未闭合 HIDING（open_hiding），或 HIDING→HIDDEN 耗时超过 `hiding_warn_threshold_s`，视为疑似卡死。
+    - 其中 `mode="notify_hide"` 聚焦 notify HIDING→HIDDEN 闭环健康度，`require_min_hide_pairs` 可用于要求至少观测到一定数量的 HIDE_REQ/HIDE_DONE 闭环。
 
 - **ScenarioDriver**
   - 位置：`tests/hang_scenarios/conftest.py`
-  - 当前能力：
-    - 占位实现的 `run_scenario(name: str, timeout_s: float) -> bool`：
-      - 如有需要则启动应用；
-      - 简单等待一段时间后返回 `True`。
-  - 规划扩展：
-    - 按 `name` 切换不同的执行路径：
-      - 通过 HTTP API 操作 rest/notify/设置页；
-      - 通过内部控制类触发特定链路；
-      - 在测试模式下注入长 JS 或延迟操作等。
+  - 核心接口：`run_scenario(name: str, timeout_s: float) -> bool`
+  - 通用行为：
+    - 如有需要先启动应用并等待 `/api/health` 就绪；
+    - 通过 `POST /api/diag/log` 记录场景起始埋点（需携带 `X-EYECare-Token`）。
+  - 已实现的按场景分支逻辑（摘录）：
+    - `scenario_f_notify_hide`：
+      - 通过 `POST /api/config` 将 `notify_auto_hide_seconds` 临时调低（例如 3 秒）；
+      - 触发一次 `POST /api/debug/notify`，随后在剩余窗口内保持 idle，交给前端 autoHide 推进 HIDE_REQ/HIDE_DONE 闭环。
+    - `scenario_g_notify_storm`：
+      - 同样临时调低 auto-hide；
+      - 窗口前半段以约 0.2 秒间隔连续触发 `POST /api/debug/notify`（模拟 notify 风暴），后半段完全 idle，为 autoHide 与 HIDING→HIDDEN 闭环留出空间。
+    - `scenario_k_notify_ack_repost_guard`：
+      - 临时调低 auto-hide；
+      - 在 timeout 窗口前 60% 时间内以约 0.8 秒间隔多轮触发 `POST /api/debug/notify`，放大“前端 ACK → `_schedule_actual_show_from_ack` → `_do_actual_show`”路径的覆盖；
+      - 若整个主动 show 段一次 notify 都未成功触发，则直接视为场景失败，避免假阳性。
+  - 其余场景暂以“就绪后 sleep 一段时间”的占位实现，后续可继续替换为更高保真度的 HTTP/控制类调用。
 
 ### 场景一览与设计目标
 

@@ -61,8 +61,9 @@ REM Note: .gitignore and .cursorindexingignore are NOT copied (development files
 REM Create user_data directory (user data directory)
 if not exist "%DISTDIR%\user_data" mkdir "%DISTDIR%\user_data"
 
-REM Copy packaging helper scripts to output directory
-if exist "%~dp0run_debug.bat" copy /y "%~dp0run_debug.bat" "%DISTDIR%\"
+REM Copy packaging helper scripts to output directory (exclude run_debug.bat from final package)
+REM NOTE: run_debug.bat is only for development and should not be shipped in dist\EyE Care
+REM if exist "%~dp0run_debug.bat" copy /y "%~dp0run_debug.bat" "%DISTDIR%\"
 if exist "%~dp0install_deps.bat" copy /y "%~dp0install_deps.bat" "%DISTDIR%\"
 
 echo.

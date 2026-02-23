@@ -55,6 +55,11 @@ class NotifyHangAnalysisResult:
     metric_notify_last_ts: Optional[_dt.datetime]
 
     @property
+    def hide_pair_count(self) -> int:
+        """HIDE_REQ/HIDE_DONE 成对出现的次数，便于测试方做最小闭环校验。"""
+        return len(self.hide_pairs)
+
+    @property
     def max_hide_duration_s(self) -> float:
         if not self.hide_pairs:
             return 0.0

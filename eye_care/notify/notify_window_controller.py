@@ -452,17 +452,59 @@ class NotifyWindowController:
         except Exception:
             return False
 
-    def _post_to_native_ui(self, fn: Callable[[], None]) -> None:
-        """将 fn 投递到 WinForms UI 线程执行（WebView2/CoreWebView2 必须在该线程访问）。无 native 时用 dispatcher 兜底。"""
+    def _post_to_native_ui(self, fn: Callable[[], None], *, strict: bool = False, op: str = "") -> bool:
+        """将 fn 投递到 WinForms UI 线程执行（WebView2/CoreWebView2 必须在该线程访问）。
+
+        strict=False：允许在 native 不可用或 BeginInvoke 失败时回退到 dispatcher（兼容旧行为，仅用于非关键调用）。
+        strict=True：仅用于 ACK / Show 等关键路径；native 不可用或 BeginInvoke 失败时只打诊断日志并返回 False，不再回退到 dispatcher，
+        以避免在 dispatcher 线程直接访问 WinForms API 导致自锁。
+        """
         native = getattr(self._window, "native", None) if self._window else None
         if native is not None:
             try:
                 from System import Action
                 native.BeginInvoke(Action(fn))
-                return
+                return True
             except Exception as e:
-                log_exception_summary(self._log, "DIAG_EXCEPTION", "notify BeginInvoke late_set", "降级走dispatcher", detail=str(e)[:200], reason_code="E_NOTIFY_M0_BEGININVOKE")
+                # 关键路径（strict=True）：仅记录并返回 False，禁止回退到 dispatcher 线程直接 Show，防止 WinForms 自锁
+                if strict:
+                    log_exception_summary(
+                        self._log,
+                        "DIAG_EXCEPTION",
+                        "notify BeginInvoke strict op=%s" % (op or "unknown"),
+                        "ack_or_show_post_failed",
+                        detail=str(e)[:200],
+                        reason_code="E_NOTIFY_M0_BEGININVOKE_STRICT",
+                    )
+                    diag.emit(
+                        "DIAG_NOTIFY_ACK_POST_FAILED",
+                        self._log,
+                        "ACK/Show 严格投递到 native UI 线程失败（BeginInvoke 异常）",
+                        op=op or "",
+                    )
+                    return False
+                # 非关键路径：保持旧行为，记录异常后回退到 dispatcher
+                log_exception_summary(
+                    self._log,
+                    "DIAG_EXCEPTION",
+                    "notify BeginInvoke late_set",
+                    "降级走dispatcher",
+                    detail=str(e)[:200],
+                    reason_code="E_NOTIFY_M0_BEGININVOKE",
+                )
+        else:
+            if strict:
+                # 关键路径：native 不可用，只打诊断日志并返回 False，不回退到 dispatcher
+                diag.emit(
+                    "DIAG_NOTIFY_ACK_NO_NATIVE",
+                    self._log,
+                    "ACK/Show 严格投递失败：native 不可用（不回退 dispatcher）",
+                    op=op or "",
+                )
+                return False
+        # 仅在非 strict 模式下才允许使用 dispatcher 兜底
         self._dispatcher.post(fn)
+        return True
 
     def _retry_set_bg_until_controller_ready(self, max_ms: int = 1200, interval_ms: int = 50) -> None:
         """
@@ -629,8 +671,8 @@ class NotifyWindowController:
             )
             if probe_index + 1 < 60:
                 threading.Timer(
-                    0.016,
-                    lambda: self._post_to_native_ui(lambda: _probe(probe_index + 1, start_ts)),
+                0.016,
+                lambda: self._post_to_native_ui(lambda: _probe(probe_index + 1, start_ts)),
                 ).start()
         self._post_to_native_ui(lambda: _probe(0, time.time()))
 
@@ -653,10 +695,70 @@ class NotifyWindowController:
         self._retry_set_bg_until_controller_ready(max_ms=1200, interval_ms=50)
 
     def _do_actual_show(self) -> None:
-        """真正 Show 通知窗口（首帧 ready 后或 _show_step 末尾若已 ready 时调用）。必须在 GUI 线程。"""
-        self._dbg_log("DIAG_NOTIFY_M0 | step=3_native_show")
+        """真正 Show 通知窗口（首帧 ready 后或 _show_step 末尾若已 ready 时调用）。
+
+        设计约束：
+        - 必须在 WinForms UI 线程执行，禁止在 dispatcher 线程直接调用 WinForms API。
+        - 若被误从非 native UI 线程调用，会通过 InvokeRequired 自检并重投递到 native UI 线程（防回归兜底）。
+        """
+        # 线程与 native 上下文诊断：用于确认实际执行是否在 WinForms UI 线程
+        cur_thread = threading.current_thread()
+        thread_name = getattr(cur_thread, "name", "")
+        thread_ident = getattr(cur_thread, "ident", None)
+        n = getattr(self._window, "native", None) if self._window else None
+        invoke_required = getattr(n, "InvokeRequired", False) if n is not None else None
+        repost_guard = getattr(self, "_do_actual_show_repost_guard", False)
+
+        # 若当前不在 native UI 线程（InvokeRequired=True），自校验并重投递到 native UI 线程，防止在 dispatcher 线程直接 Show
+        if n is not None and getattr(n, "InvokeRequired", False):
+            # 极端情况下（线程调度/BeginInvoke 失败重试等），自重投有概率被多次误触发，这里增加一次性防护：
+            # - 第一次检测到 InvokeRequired=True 时标记 repost_guard，仅允许一次成功的 BeginInvoke。
+            # - 若 guard 已经为 True，再次进入则直接返回并打 DIAG，避免潜在的重复重投循环。
+            if repost_guard:
+                diag.emit(
+                    "DIAG_NOTIFY_M0_REPOST_GUARD_HIT",
+                    self._log,
+                    "InvokeRequired=True 但 repost_guard 已命中，跳过再次 BeginInvoke(_do_actual_show)",
+                    thread_name=thread_name,
+                    thread_ident=thread_ident,
+                )
+                return
+            try:
+                from System import Action
+                n.BeginInvoke(Action(self._do_actual_show))
+                # 仅在 BeginInvoke 成功时才置位 guard，避免异常情况下 guard 长期卡死导致后续 show 被短路。
+                self._do_actual_show_repost_guard = True
+                diag.emit(
+                    "DIAG_NOTIFY_M0_REPOST_TO_NATIVE_UI",
+                    self._log,
+                    "InvokeRequired=True，自重投到 native UI 线程执行 _do_actual_show",
+                    thread_name=thread_name,
+                    thread_ident=thread_ident,
+                )
+            except Exception as e:
+                # BeginInvoke 失败时不保留 guard，允许后续尝试仍可进入本分支，不人为制造长期短路。
+                self._do_actual_show_repost_guard = False
+                log_exception_summary(
+                    self._log,
+                    "DIAG_EXCEPTION",
+                    "notify do_actual_show repost_to_native_ui",
+                    "ack_or_show_post_failed",
+                    detail=str(e)[:200],
+                    reason_code="E_NOTIFY_M0_DO_SHOW_REPOST_FAIL",
+                )
+            return
+
+        # 执行到这里说明当前已在 WinForms UI 线程上，重置自重投防护标志，允许后续新的 show 周期再次使用。
+        if repost_guard:
+            self._do_actual_show_repost_guard = False
+
+        self._dbg_log(
+            "DIAG_NOTIFY_M0 | step=3_native_show_enter thread=%s ident=%s invoke_required=%s",
+            thread_name,
+            thread_ident,
+            invoke_required,
+        )
         try:
-            n = getattr(self._window, "native", None) if self._window else None
             if n is not None:
                 n.Show()
                 n.Visible = True
@@ -672,7 +774,12 @@ class NotifyWindowController:
                 self._window.show()
             except Exception as e:
                 log_exception_summary(self._log, "DIAG_EXCEPTION", "notify show", "降级", detail=str(e)[:200], reason_code="E_NOTIFY_M0_SHOW")
-        self._dbg_log("DIAG_NOTIFY_M0 | step=3_after_native_show")
+        self._dbg_log(
+            "DIAG_NOTIFY_M0 | step=3_after_native_show thread=%s ident=%s invoke_required=%s",
+            thread_name,
+            thread_ident,
+            invoke_required,
+        )
         try:
             ctrl = self._controller_getter() if self._controller_getter else None
             mode = ctrl._current_mode() if ctrl else ""
@@ -890,11 +997,80 @@ class NotifyWindowController:
                 except Exception as e:
                     log_exception_summary(self._log, "DIAG_EXCEPTION", "notify fallback", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_FALLBACK")
 
+    def _schedule_actual_show_from_ack(self) -> None:
+        """仅供 ACK 回调使用：严格要求在 WinForms UI 线程上执行 _do_actual_show。
+
+        设计约束：
+        - 禁止在 dispatcher 线程直接调用 _do_actual_show / WinForms API。
+        - strict=True：若 native 不可用或 BeginInvoke 失败，仅记录日志并返回，不回退到 dispatcher。
+        """
+
+        def _safe_show() -> None:
+            try:
+                self._do_actual_show()
+            except Exception as e:
+                log_exception_summary(
+                    self._log,
+                    "DIAG_EXCEPTION",
+                    "notify do_actual_show ready_ack",
+                    "降级",
+                    detail=str(e)[:200],
+                    reason_code="E_NOTIFY_M0_DO_SHOW",
+                )
+
+        ok = self._post_to_native_ui(_safe_show, strict=True, op="ready_for_show_ack")
+        if not ok:
+            # 严格 ACK 投递失败：本次通知无法安全 Show，需要尽快收敛，避免 pending key 长时间占用。
+            # 这里不再尝试在 dispatcher 线程直接 Show，而是：
+            # - 记录一次 show_fail 指标
+            # - 将状态机打到 FAILED（若启用 sm_notify_v2）
+            # - 调用 clear_prompt_dedupe 释放本次去重 key
+            # - 复位 inflight，允许后续请求重新发起 show
+            try:
+                self._metrics.record_show_end(success=False)
+            except Exception:
+                pass
+            try:
+                if self._get_sm_notify_v2():
+                    self._shadow.record(NotifyMachineState.FAILED, "ACK_POST_FAIL", reason_code="ack_post_strict_fail")
+            except Exception:
+                pass
+            try:
+                # 释放 runtime 侧 pending key，避免长时间阻塞后续提醒。
+                # 注意：clear_prompt_dedupe → NotificationManager.clear_last_shown_key()
+                # 会清理“当天所有 shown_prompt_keys”，而不只是当前 prompt。
+                # 在 ACK 严格投递失败这一极端分支，我们接受可能导致当天已展示过的其他提醒再次可触发，
+                # 以保证失败 session 不长期占用去重槽位（prefer 可重触发 over 长期占坑）。
+                self._clear_prompt_dedupe()
+            except Exception:
+                pass
+            with self._show_lock:
+                self._show_inflight = False
+                self._pending_payload = None
+            if is_debug_enabled():
+                self._dbg_log("DIAG_NOTIFY_M0 | ACK strict post_to_native_ui failed (ready_for_show_ack), degraded to fail-fast cleanup")
+
     def _on_ready_for_show_ack(self) -> None:
         """方案2：前端调用 notify_ready_for_show 后由 bridge 投递到 GUI 线程执行。first_frame 唯一来源，按 session 去重（指南 5.3）。
 
-        状态机驱动 FIRST_FRAME_OK。
+        重要约束：
+        - ACK 仅推进 FIRST_FRAME_OK 与前端 fade 触发，不负责决定线程。
+        - native Show / WinForms API 必须在 WinForms UI 线程执行，禁止在 dispatcher 线程直接 Show。
         """
+        # ACK 状态结构化日志：便于复盘 ACK 到达时控制器的整体状态
+        native = getattr(self._window, "native", None) if self._window else None
+        diag.emit(
+            "DIAG_NOTIFY_ACK_STATE",
+            self._log,
+            "notify ACK 状态快照",
+            show_inflight=bool(self._show_inflight),
+            show_deferred_until_ready=bool(getattr(self, "_show_deferred_until_ready", False)),
+            initialized=bool(self._initialized),
+            window_exists=bool(self._window is not None),
+            native_exists=bool(native is not None),
+            show_session_id=self._current_show_session_id,
+            prompt_key_exists=bool(self._current_prompt_key is not None),
+        )
         sid = self._current_show_session_id
         if sid is not None and self._first_frame_received_session_id == sid:
             self._first_frame_dup_count += 1
@@ -915,11 +1091,9 @@ class NotifyWindowController:
 
         self._notify_ack_received = True
         if getattr(self, "_show_deferred_until_ready", False):
+            # 仅通过严格模式投递到 WinForms UI 线程执行 _do_actual_show，不再在 dispatcher 线程直接 Show
             self._show_deferred_until_ready = False
-            try:
-                self._do_actual_show()
-            except Exception as e:
-                log_exception_summary(self._log, "DIAG_EXCEPTION", "notify do_actual_show ready_ack", "降级", detail=str(e)[:200], reason_code="E_NOTIFY_M0_DO_SHOW")
+            self._schedule_actual_show_from_ack()
         self._try_start_notify_fade_in(force=False)
 
     def _on_min_delay_elapsed(self) -> None:
@@ -1067,7 +1241,8 @@ class NotifyWindowController:
                 self._show_deferred_until_ready = True
                 if is_debug_enabled():
                     diag.emit("DIAG_NOTIFY_PIPE", self._log, "show 延后至首帧 ready", step="defer_show_until_ready")
-                # 2) 若前端已 ready（如预加载后先 ACK），则立即 Show；否则等 _on_ready_for_show_ack
+                # 2) 若前端已 ready（如预加载后先 ACK），则立即在 WinForms UI 线程 Show；否则等 _on_ready_for_show_ack。
+                #    注意：native Show 必须在 WinForms UI 线程执行，禁止在 dispatcher 线程直接调用 WinForms API。
                 if self._notify_ack_received:
                     self._show_deferred_until_ready = False
                     self._do_actual_show()

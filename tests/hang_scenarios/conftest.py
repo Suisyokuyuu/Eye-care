@@ -138,6 +138,8 @@ class HangDetector:
         self,
         timeout_s: float,
         mode: Literal["generic", "notify_hide"] = "generic",
+        *,
+        require_min_hide_pairs: int | None = None,
     ) -> bool:
         """
         在给定时间内等待场景完成，并基于 debug.log 做最小“卡死”判定。
@@ -171,6 +173,11 @@ class HangDetector:
 
         # notify hide 专用逻辑：对 HIDING -> HIDDEN 耗时做简单阈值判断。
         if mode == "notify_hide" and result.max_hide_duration_s > self.hiding_warn_threshold_s:
+            return False
+
+        # 对于某些场景（例如 notify ACK/repost_guard 回归），要求至少观察到一定数量的
+        # HIDE_REQ/HIDE_DONE 闭环，避免“完全未覆盖 hide 闭环也通过”的情况。
+        if require_min_hide_pairs is not None and result.hide_pair_count < require_min_hide_pairs:
             return False
 
         return True
@@ -304,6 +311,61 @@ class ScenarioDriver:
                     time.sleep(0.2)
 
                 # 2) idle 段：完全不再主动 show，由 autoHide 完成后续 hide 链路。
+                remaining = max(0.0, end - time.time())
+                if remaining > 0:
+                    time.sleep(remaining)
+
+            elif name == "scenario_k_notify_ack_repost_guard":
+                # 场景 K：多轮 notify show + ACK + autoHide 回归
+                #
+                # 目标：
+                # - 覆盖「前端 ACK → _schedule_actual_show_from_ack → _do_actual_show」严格投递路径；
+                # - 多轮触发 notify show，验证 repost_guard 不会在异常路径上永久卡死后续 show；
+                # - 在 autoHide 正常工作的前提下，观察多轮 HIDING→HIDDEN 闭环是否健康。
+                #
+                # 实现策略：
+                # - 将 auto-hide 下调至 3 秒，保证在单次 timeout_s 窗口内能完成多轮 show→hide；
+                # - 以约 0.8s 间隔连续触发 /api/debug/notify，交给前端完成 ACK 与 fade；
+                # - 不强制模拟 ACK 严格失败场景，仅通过多轮真实链路回归新代码路径。
+                self._post_json(
+                    "/api/config",
+                    {"notify_auto_hide_seconds": 3},
+                    require_auth=True,
+                )
+
+                # 将窗口拆分为「主动 show 阶段」与「idle 阶段」：
+                # - 主动 show 阶段内以 0.8s 间隔多轮触发 /api/debug/notify，并统计成功次数；
+                # - idle 阶段完全静默，交给 autoHide 推进 HIDE_REQ/HIDE_DONE 闭环。
+                #
+                # 这样可以避免“未真正触发任何 notify 仍然通过”的假阳性，
+                # 同时为 notify_hang_analyzer 创造至少一对 hide_pairs 的观测机会。
+                now = time.time()
+                end = now + timeout_s
+                # 约 60% 时间用于主动 show，40% 留给 idle + autoHide
+                active_until = now + timeout_s * 0.6
+
+                success_count = 0
+
+                # 1) 主动 show 段：尽力多轮触发 notify，统计成功次数
+                while time.time() < active_until:
+                    try:
+                        self._post_json("/api/debug/notify", {}, require_auth=True)
+                    except Exception:
+                        # 单次触发失败不应中断整场景，继续尝试后续轮次
+                        time.sleep(0.5)
+                        continue
+
+                    success_count += 1
+
+                    # 0.8 秒间隔：允许 ACK + 最小淡入延迟顺利完成，同时在 auto-hide 计时器尚未
+                    # 触发前发起下一轮，制造一定程度的重叠以放大小概率问题的暴露概率。
+                    time.sleep(0.8)
+
+                # 若在整个主动 show 段完全没能成功触发任何 notify，则视为场景失败，避免假阳性。
+                if success_count == 0:
+                    return False
+
+                # 2) idle 段：完全不再 show，由 autoHide 完成后续 hide 链路。
                 remaining = max(0.0, end - time.time())
                 if remaining > 0:
                     time.sleep(remaining)

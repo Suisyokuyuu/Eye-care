@@ -204,6 +204,12 @@ def emit(
     # normal mode: only ALWAYS_ON, no throttle for ALWAYS_ON
     if policy not in cfg["allow_policies"]:
         return False
+    # 某些关键 ALWAYS_ON 事件需要绕过 block_patterns（例如 ACK 严格投递失败）
+    _block_exempt = {
+        "DIAG_NOTIFY_ACK_POST_FAILED",
+    }
+    if canonical in _block_exempt or event_code in _block_exempt:
+        return True
     for pat in cfg["block_patterns"]:
         if fnmatch.fnmatch(event_code, pat) or fnmatch.fnmatch(canonical, pat):
             return False
