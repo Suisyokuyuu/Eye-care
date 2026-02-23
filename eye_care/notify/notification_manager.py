@@ -159,3 +159,15 @@ class NotificationManager:
         after_count = len(self._shown_prompt_keys)
         if before_count != after_count:
             log.info("已清除今日通知去重标记: 清除前=%s, 清除后=%s", before_count, after_count)
+
+    def reset_runtime_state(self) -> None:
+        """重置运行时状态：清空待处理队列、重置最后显示时间、清理今日去重标记。
+        
+        用于通知功能被禁用时清理状态，确保重新启用时不会受到残留状态影响。
+        线程安全：在内部锁保护下执行。
+        """
+        with self._pending_lock:
+            self._pending_prompt_keys.clear()
+            self._last_show_time = 0.0
+            self.clear_last_shown_key()
+        log.debug("NotificationManager runtime state reset")

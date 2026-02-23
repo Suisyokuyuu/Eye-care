@@ -49,11 +49,21 @@
   - `DIAG_APP_EXIT_OK`
   - 异常时 `DIAG_EXCEPTION` / `DIAG_UNCAUGHT*`
 
+> **测试/验收运行建议**：  
+> - 建议为每轮测试指定独立的数据目录，例如：`python main.py --data-dir ./user_data_test_X`，避免与日常使用的数据混用。  
+> - 如需并行运行多个实例/用例，请显式添加 `--no-single` 关闭单实例锁，并为每个实例配置不同的 `--data-dir` 与 `EYECARE_API_PORT` / `--api-port`，避免端口与 user_data 目录冲突。
+
 ### Debug 模式（`EYECARE_DEBUG=1` 且模块开启）
 
+**前置条件**：
+- 程序以 Debug 模式启动：例如 `python main.py --debug` 或设置环境变量 `EYECARE_DEBUG=1`（需与配置中的 debug 开关一致）。
+- 通过 `GET /api/auth/token` 获取当前会话 token，并在**所有写请求**（`POST/PUT/PATCH/DELETE`）的 Header 中附加：
+  - `X-EYECare-Token: <token>`
+
+**期望行为**：
 - 启动链路可见：`DIAG_START -> DIAG_CONTROLLER_READY -> DIAG_FLASK_READY(或 TIMEOUT) -> DIAG_WINDOW_CREATED -> DIAG_GUI_LOOP`。
-- `POST /api/debug/notify` 后可见 `DIAG_NOTIFY_SHOW` / `DIAG_NOTIFY_SHOWN`。
-- `POST /api/rest/start` 后可见 `DIAG_REST_API_START` / `DIAG_REST_SHOW_ENTER`。
+- 携带 token 调用 `POST /api/debug/notify` 后，可见 `DIAG_NOTIFY_SHOW` / `DIAG_NOTIFY_SHOWN`。
+- 携带 token 调用 `POST /api/rest/start` 后，可见 `DIAG_REST_API_START` / `DIAG_REST_SHOW_ENTER`。
 - 调度链路可见 `DIAG_DISPATCH_STAGE`（或别名映射来源事件）。
 
 ## 5) 诊断策略约束
