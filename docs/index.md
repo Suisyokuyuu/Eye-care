@@ -16,10 +16,8 @@
 5. `docs/diagnostics/event_codes.yml`（诊断事件字典，运行时依赖）
 6. `docs/diagnostics/NORMAL_MODE_LOGGING.md`（普通模式日志行为）
 7. `docs/diagnostics/DIAG_EVENT_MAPPING.md`（事件映射与别名摘要）
-8. `docs/diagnostics/NOTIFY_APPEAR_DISAPPEAR.md`（历史故障复盘与回归点）
-9. `docs/CHANGELOG_FREEZE.md`（冻结期文档变更记录）
-10. `docs/ROADMAP.md`（下版本功能规划）
-11. `docs/PACKAGE_REVIEW_AUDIT.md`（打包前复核审计，旧代码/注释标记）
+8. `docs/CHANGELOG_FREEZE.md`（冻结期文档变更记录）
+9. `docs/ROADMAP.md`（下版本功能规划）
 
 ## 交付检查提醒
 

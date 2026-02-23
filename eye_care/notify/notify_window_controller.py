@@ -80,9 +80,10 @@ class NotifyWindowController:
         self._style_target: Optional[StyleTarget] = None
         self._style_coordinator: Optional[StyleCoordinator] = None
 
-        # fade/visibility guards（避免重复 hide / 多次 fade 叠加导致“一闪就没了”）
+        # fade/visibility guards（避免重复 hide / 多次 fade 叠加导致"一闪就没了"）
         self._fade_gen: int = 0
         self._hide_in_progress: bool = False
+        self._hide_timeout_timer: Optional[threading.Timer] = None
         self._shown: bool = False
         self._alpha_cache: int = 255
         self._show_retry_count: int = 0
@@ -398,11 +399,20 @@ class NotifyWindowController:
         """通过 dispatcher.post 投递到 GUI 线程执行 evaluate_js，避免在后台线程直接调用窗口 API。
         
         硬约束：不可在后台线程直接 evaluate_js，必须通过 dispatcher.post 投递到 GUI 线程。
+        
+        注意：evaluate_js 是同步调用，可能阻塞 GUI 线程。虽然无法真正中断阻塞的调用，
+        但会记录执行时间，便于诊断问题。
         """
         def _eval_in_gui():
             try:
                 if self._window and getattr(self._window, "evaluate_js", None):
+                    start_time = time.perf_counter()
                     self._window.evaluate_js(js)
+                    elapsed = time.perf_counter() - start_time
+                    # 如果执行时间超过 100ms，记录警告日志
+                    if elapsed > 0.1:
+                        diag.emit("DIAG_NOTIFY_PIPE", self._log, f"evaluate_js 执行时间较长: {elapsed:.3f}s", step="eval_js_slow", js_snippet=js[:100])
+                        self._log.warning(f"notify evaluate_js took {elapsed:.3f}s, may block GUI thread. JS: {js[:200]}")
             except Exception as e:
                 log_exception_summary(self._log, "DIAG_EXCEPTION", "notify evaluate_js", "降级", detail=str(e)[:200], reason_code="E_NOTIFY_M0_EVAL_JS")
         self._dispatcher.post(_eval_in_gui)
@@ -760,22 +770,23 @@ class NotifyWindowController:
             log_exception_summary(self._log, "DIAG_EXCEPTION", "notify fallback", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_FALLBACK")
 
     def _set_alpha(self, hwnd: int, alpha: int, where: str) -> None:
-        # 本函数不再打 HARD_NOTIFY_ALPHA，只打 HARD_NOTIFY_ALPHA_CALLSITE；若 log 出现 "HARD_NOTIFY_ALPHA" 那条，来自 win_effects.notify_set_alpha（需查谁调了它）
-        # 调用栈日志：只要出现这条说明还有代码在调 set alpha，几乎必然会把 layered 加回来
+        """
+        Notify 宿主渐变统一走 win_effects.notify_set_alpha，避免直接调用 SetLayeredWindowAttributes 导致
+        Layered + Acrylic 交互异常；where 建议使用 \"notify_fade_in\" / \"notify_fade_out\" 等前缀。
+        """
         try:
-            import traceback
-            import win32con
-            import win32gui
-            ex0 = win32gui.GetWindowLong(int(hwnd), win32con.GWL_EXSTYLE)
-            stk = " | ".join([l.strip() for l in traceback.format_stack(limit=6)])  # limit: stack frames, not quota-related
-            self._log.info(
-                "HARD_NOTIFY_ALPHA_CALLSITE where=%s alpha=%s hwnd=%s ex_before=%s stack=%s",
-                where, int(alpha), int(hwnd), hex(ex0 & 0xFFFFFFFF), stk,
-            )
+            if not hwnd:
+                return
+            self._win_effects.notify_set_alpha(int(hwnd), int(alpha), where or "notify_fade")
         except Exception as e:
-            log_exception_summary(self._log, "DIAG_EXCEPTION", "notify fallback", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_FALLBACK")
-        # NOTIFY 彻底不设 alpha：SetLayeredWindowAttributes 会加回 WS_EX_LAYERED，导致 Acrylic + Layered 白底
-        return
+            log_exception_summary(
+                self._log,
+                "DIAG_EXCEPTION",
+                "notify set_alpha",
+                "degrade_continue",
+                detail=str(e)[:200],
+                reason_code="E_NOTIFY_SET_ALPHA",
+            )
 
     def _hwnd_brief(self, tag: str, hwnd: int) -> None:
         """hwnd 简报：ex/layered/class/text，用于抓打错窗口或样式漂移。"""
@@ -1174,7 +1185,6 @@ class NotifyWindowController:
             if self._hide_in_progress:
                 diag.emit("DIAG_NOTIFY_PIPE", self._log, "hide已在进行，忽略重复调用", step="hide_guard", reason=reason)
                 return
-
             # 状态机驱动 HIDE_REQ
             if self._get_sm_notify_v2():
                 result, _ = self._shadow.try_transition(event="HIDE_REQ", to_state=NotifyMachineState.HIDING, result="ok")
@@ -1202,49 +1212,80 @@ class NotifyWindowController:
                         win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
                 except Exception as e:
                     log_exception_summary(self._log, "DIAG_EXCEPTION", "notify fallback", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_FALLBACK")
+            # 新策略基础上微调：前端卡片做 CSS 渐出，同时宿主窗口做一次受控 alpha 渐出（通过 win_effects.notify_set_alpha），
+            # 渐出结束后再 hide + 恢复 exstyle，既保证观感，又尽量规避 Layered + Acrylic 交互异常。
+            self._hide_in_progress = True
+            # 1) 触发前端卡片渐出动画
+            self._post_js_update("window.notifyCardFadeOut && window.notifyCardFadeOut();")
 
-            if hwnd:
+            # 1.1) 同步触发宿主窗体 alpha 渐出（约 500ms，与前端 CSS fade-out 对齐）
+            try:
+                if hwnd:
+                    # 这里使用内部 _fade_async，底层通过 _set_alpha → win_effects.notify_set_alpha 统一管理 Layered/exstyle。
+                    self._fade_async(int(hwnd), 255, 0, 550, "notify_fade_out", on_done=None)
+            except Exception as e:
+                log_exception_summary(
+                    self._log,
+                    "DIAG_EXCEPTION",
+                    "notify fade_out_host",
+                    "degrade_continue",
+                    detail=str(e)[:200],
+                    reason_code="E_NOTIFY_HOST_FADE_OUT",
+                )
+
+            def _after_fade_simple(_hwnd=hwnd):
+                """卡片渐出完成后的统一收尾：隐藏窗口 + 状态机 HIDE_DONE + 样式恢复。"""
                 try:
-                    self._hide_in_progress = True
-                    # 使用 _post_js_update 投递执行，避免同步 evaluate_js 在前端忙时阻塞 GUI 线程
-                    self._post_js_update("window.notifyCardFadeOut && window.notifyCardFadeOut();")
-                    # 宿主窗口与内容同步渐出：0.5s 内窗口 alpha 255→0，再 hide
-                    alpha_hwnd = self._resolve_hwnd_for_alpha(hwnd)
-                    duration_s = 0.5
-                    steps = max(8, min(25, int(duration_s * 60)))
-                    step_dt = duration_s / steps
+                    # 取消可能存在的旧超时定时器
+                    if self._hide_timeout_timer:
+                        try:
+                            self._hide_timeout_timer.cancel()
+                        except Exception:
+                            pass
+                        self._hide_timeout_timer = None
 
-                    def _fade_out_runner():
-                        import time
-                        import math
-                        start = time.perf_counter()
-                        for k in range(0, steps + 1):
-                            t = k / float(steps)
-                            ease = 0.5 - 0.5 * math.cos(math.pi * t)
-                            a = int(round(255 * (1.0 - ease)))
-                            self._dispatcher.post(lambda _a=a: self._win_effects.notify_set_alpha(alpha_hwnd, _a, "notify_fade_out"))
-                            target = start + (k + 1) * step_dt
-                            wait = target - time.perf_counter()
-                            if wait > 0:
-                                time.sleep(wait)
-                        def _after_fade(_ah=alpha_hwnd):
-                            self._hide_in_progress = False
-                            _do_hide()
-                            if self._shadow.state == NotifyMachineState.HIDING:
-                                self._shadow.record(NotifyMachineState.HIDDEN, "HIDE_DONE")
-                            self._win_effects.restore_exstyle_after_hide([_ah])
-                            diag_notify_hwnd_alpha(self._log, _ah, "notify_after_fade_and_hide")
-                        self._dispatcher.post(_after_fade)
-
-                    threading.Thread(target=_fade_out_runner, daemon=True, name="notify_fade_out").start()
-                    return
-                except Exception:
                     self._hide_in_progress = False
-                    pass
+                    _do_hide()
+                    if self._shadow.state == NotifyMachineState.HIDING:
+                        self._shadow.record(NotifyMachineState.HIDDEN, "HIDE_DONE")
+                    if _hwnd:
+                        try:
+                            # 尝试恢复可能残留的 Layered 样式（幂等）
+                            self._win_effects.restore_exstyle_after_hide([_hwnd])
+                            diag_notify_hwnd_alpha(self._log, _hwnd, "notify_after_simple_hide")
+                        except Exception as e:
+                            log_exception_summary(self._log, "DIAG_EXCEPTION", "notify after_simple_hide", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_AFTER_SIMPLE_HIDE")
+                    diag.emit("DIAG_NOTIFY_PIPE", self._log, "notify 简化淡出收尾完成", step="after_simple_fade", reason=reason)
+                except Exception as e:
+                    # 即便收尾失败，也要尽量保证状态复位，避免下一次 hide 被永远挡住
+                    log_exception_summary(self._log, "DIAG_EXCEPTION", "notify after_simple_fade", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_AFTER_SIMPLE_FADE")
+                    self._hide_in_progress = False
+                    try:
+                        _do_hide()
+                    except Exception:
+                        pass
 
-            _do_hide()
-            if self._shadow.state == NotifyMachineState.HIDING:
-                self._shadow.record(NotifyMachineState.HIDDEN, "HIDE_DONE")
+            # 2) 预计前端 CSS 渐出时间 ~500ms，Timer 在线程中仅负责投递到 GUI 线程执行收尾
+            def _schedule_after_fade():
+                try:
+                    self._dispatcher.post(_after_fade_simple)
+                except Exception as e:
+                    log_exception_summary(self._log, "DIAG_EXCEPTION", "notify schedule_after_fade", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_SCHEDULE_AFTER_FADE")
+
+            threading.Timer(0.55, _schedule_after_fade).start()
+
+            # 3) 超时兜底：若 1.5 秒后仍未完成收尾，则再投递一次简单收尾，避免极端情况下卡在 HIDING
+            def _timeout_fallback_simple():
+                if self._hide_in_progress:
+                    diag.emit("DIAG_NOTIFY_PIPE", self._log, "notify 简化淡出超时兜底触发", step="hide_timeout_simple", reason=reason, timeout_sec=1.5)
+                    try:
+                        self._dispatcher.post(_after_fade_simple)
+                    except Exception as e:
+                        log_exception_summary(self._log, "DIAG_EXCEPTION", "notify timeout_fallback_simple", "degrade_continue", detail=str(e)[:200], reason_code="E_NOTIFY_TIMEOUT_SIMPLE")
+
+            self._hide_timeout_timer = threading.Timer(1.5, _timeout_fallback_simple)
+            self._hide_timeout_timer.daemon = True
+            self._hide_timeout_timer.start()
         except Exception:
             self._log.exception("notify hide failed")
 
