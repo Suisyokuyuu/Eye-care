@@ -31,16 +31,6 @@ class AppConfig:
     # 休息倒计时结束时是否播放提示音（仅完成时播放，跳过不播放）
     rest_end_sound_enabled: bool = True
 
-    # 启用休息提醒功能总开关（控制 NotifierService 的启动/停止）
-    notify_enabled: bool = True
-
-    # Notify 提示音开关：仅控制“通知气泡显示成功时是否播放提示音”
-    # 语义：
-    # - notify_enabled == False 时，本开关不生效（不调度 Notify、不播放声音）
-    # - notify_enabled == True 且 notify_sound_enabled == True：有气泡时播放提示音
-    # - notify_enabled == True 且 notify_sound_enabled == False：仅视觉提醒，不播放提示音
-    notify_sound_enabled: bool = True
-
     # 诊断模式：启用硬日志、截图、watchdog、debug console。默认 False。
     debug_enabled: bool = False
 

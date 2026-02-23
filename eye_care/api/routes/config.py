@@ -34,8 +34,6 @@ def register_config_routes(app: Flask, controller, log):
                 "startup_dnd": bool(getattr(cfg, "startup_dnd", False)),
                 "startup_show_main": bool(getattr(cfg, "startup_show_main", True)),
                 "startup_launch_at_login": bool(getattr(cfg, "startup_launch_at_login", False)),
-                "notify_enabled": bool(getattr(cfg, "notify_enabled", True)),
-                "notify_sound_enabled": bool(getattr(cfg, "notify_sound_enabled", True)),
                 "notify_auto_hide_seconds": int(getattr(cfg, "notify_auto_hide_seconds", 20)),
                 "rest_end_sound_enabled": bool(getattr(cfg, "rest_end_sound_enabled", True)),
             }
@@ -71,10 +69,6 @@ def register_config_routes(app: Flask, controller, log):
                     set_launch_at_login(cfg.startup_launch_at_login)
                 except Exception as e:
                     log.warning("launch_at_login apply failed: %s", e)
-            if "notify_enabled" in updates:
-                cfg.notify_enabled = bool(updates["notify_enabled"])
-            if "notify_sound_enabled" in updates:
-                cfg.notify_sound_enabled = bool(updates["notify_sound_enabled"])
             if "notify_auto_hide_seconds" in updates:
                 v = int(updates["notify_auto_hide_seconds"])
                 cfg.notify_auto_hide_seconds = max(0, min(600, v))
@@ -115,30 +109,7 @@ def register_config_routes(app: Flask, controller, log):
             paths = controller.get_app_paths()
             exe_path = paths.get(app_short)
             if not exe_path:
-                # app 路径未知或已被清理：返回稳定的错误码，避免重复 stat
-                return jsonify({"error": "app path unknown", "code": "icon_file_missing"}), 404
-
-            exe_path_obj = Path(exe_path)
-
-            def _cleanup_and_404_missing_exe(reason: str):
-                """当检测到 exe 已不存在时，自清理 app_paths 并返回统一错误响应。"""
-                removed = False
-                remove_fn = getattr(controller, "remove_app_path", None)
-                try:
-                    if callable(remove_fn):
-                        removed = bool(remove_fn(app_short, exe_path))
-                except Exception as cleanup_err:
-                    log_exception_summary(
-                        log,
-                        "DIAG_EXCEPTION",
-                        "app_paths icon cleanup",
-                        "degrade_continue",
-                        detail=str(cleanup_err)[:200],
-                        reason_code="E_CONTROLLER_FALLBACK",
-                    )
-                if removed:
-                    log.info("icon: removed stale app_path for app=%s reason=%s", app_short, reason)
-                return jsonify({"error": "file not found", "code": "icon_file_missing"}), 404
+                return jsonify({"error": "app path unknown", "code": "not_found"}), 404
 
             # 检查缓存是否有效（mtime/size 变化检测 + sha1 校验）
             cached = icon_index.get(app_short) or icon_index.get(app_short.lower())
@@ -147,20 +118,13 @@ def register_config_routes(app: Flask, controller, log):
             current_size = None
 
             try:
-                exe_stat = exe_path_obj.stat()
+                exe_stat = Path(exe_path).stat()
                 current_mtime = exe_stat.st_mtime
                 current_size = exe_stat.st_size
             except Exception as e:
                 if app_short not in _icon_stat_fail_cache:
                     _icon_stat_fail_cache[app_short] = True
                     log.warning("config: stat exe failed for %s: %s", app_short, e)
-                # 若文件已不存在，则就地自清理 app_paths 并返回明确错误码
-                try:
-                    if not exe_path_obj.exists():
-                        return _cleanup_and_404_missing_exe("stat_failed_missing")
-                except Exception:
-                    # exists() 异常视为非致命，继续后续流程
-                    pass
 
             if cached and isinstance(cached, dict):
                 cached_mtime = cached.get("mtime")
@@ -184,7 +148,7 @@ def register_config_routes(app: Flask, controller, log):
             _ICON_HASH_MAX = 64 * 1024 * 1024
             exe_sha1 = None
             try:
-                st = exe_path_obj.stat()
+                st = Path(exe_path).stat()
                 if st.st_size > _ICON_HASH_MAX:
                     log.debug("icon hash skipped: file too large (%s > %s)", st.st_size, _ICON_HASH_MAX)
                 else:
@@ -198,10 +162,6 @@ def register_config_routes(app: Flask, controller, log):
                     exe_sha1 = h.hexdigest()
             except Exception as e:
                 log.debug("exe sha1 compute failed: %s", e)
-
-            # 如果文件不存在，直接返回错误并自清理（避免调用 Windows API 导致阻塞）
-            if not exe_path_obj.exists():
-                return _cleanup_and_404_missing_exe("exists_check_missing")
 
             try:
                 from ...ui.win_icon_extract import extract_icon_to_png
@@ -226,33 +186,15 @@ def register_config_routes(app: Flask, controller, log):
 
             # 缓存失败时使用临时文件
             fd, out_path = tempfile.mkstemp(suffix=".png")
-            os.close(fd)
-            temp_in_use = False
             try:
+                os.close(fd)
                 if extract_icon_to_png(exe_path, out_path, size=64):
-                    temp_in_use = True
-                    resp = send_file(out_path, mimetype="image/png", max_age=3600)
-
-                    def _cleanup_temp() -> None:
-                        try:
-                            Path(out_path).unlink(missing_ok=True)
-                        except OSError as e:
-                            log.debug("icon temp cleanup failed: %s", e)
-
-                    # 使用 call_on_close 在响应发送完成后再删除，避免 Windows 下“文件占用删除失败”
-                    try:
-                        resp.call_on_close(_cleanup_temp)
-                    except Exception:
-                        # 极端情况下退化为同步清理（行为与旧版一致）
-                        _cleanup_temp()
-                    return resp
+                    return send_file(out_path, mimetype="image/png", max_age=3600)
             finally:
-                # 提取失败或中途异常时，同步尝试删除；成功路径由 _cleanup_temp 负责
-                if not temp_in_use:
-                    try:
-                        Path(out_path).unlink(missing_ok=True)
-                    except OSError as e:
-                        log.debug("icon temp cleanup failed (fallback): %s", e)
+                try:
+                    Path(out_path).unlink(missing_ok=True)
+                except OSError as e:
+                    log.debug("icon temp cleanup failed: %s", e)
             return jsonify({"error": "extract failed", "code": "icon_error"}), 500
         except Exception as e:
             log.exception("icon failed")
