@@ -18,16 +18,36 @@ from .constants import (
 from .bridge_inject import inject_bridge_script, inject_drag_region
 
 
-def _play_notify_sound():
-    """Play notification sound asynchronously if local asset exists."""
+def _play_notify_sound(prompt_key: str | None = None, notify_enabled: bool | None = None, notify_sound_enabled: bool | None = None) -> None:
+    """Play notification sound asynchronously if local asset exists.
+
+    仅在 Notify 气泡实际展示成功且配置允许时由 GUI 线程调用。
+    """
+    log = logging.getLogger(__name__)
     try:
         import winsound
         sound_path = UI_WEB_DIR / "assets" / "notify_bubble_softer.wav"
-        if sound_path.exists():
+        exists = sound_path.exists()
+        # 诊断事件：记录是否尝试播放、资源是否存在及相关配置开关
+        try:
+            diag.emit(
+                "DIAG_NOTIFY_SOUND",
+                log,
+                "尝试播放通知音效",
+                sound_path=str(sound_path),
+                exists=bool(exists),
+                prompt_key=str(prompt_key or ""),
+                notify_enabled=bool(notify_enabled) if notify_enabled is not None else None,
+                notify_sound_enabled=bool(notify_sound_enabled) if notify_sound_enabled is not None else None,
+            )
+        except Exception:
+            # 诊断链路失败不影响后续行为
+            pass
+        if exists:
             winsound.PlaySound(str(sound_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
     except OSError as e:
         log_exception_summary(
-            logging.getLogger(__name__),
+            log,
             "DIAG_EXCEPTION",
             "notify sound os error",
             "degrade_continue",
@@ -36,7 +56,7 @@ def _play_notify_sound():
         )
     except Exception as e:
         log_exception_summary(
-            logging.getLogger(__name__),
+            log,
             "DIAG_EXCEPTION",
             "notify sound unexpected error",
             "degrade_continue",
@@ -530,11 +550,10 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
         mark_notified=_mark_notified,
     )
     notifier_service = NotifierService(
-        controller=controller,
+        controller_getter=lambda: controller,
         notification_manager=notification_manager,
         poll_interval_s=1.0,
     )
-    notifier_service.start()
 
     # 用户点击 rest/snooze/dismiss 时再上报 on_notify_complete(True)，避免"出现又马上消失"
     def _on_user_action_complete(prompt_key, extra):
@@ -552,7 +571,115 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
         harden_hwnd_dump=_harden_hwnd_dump_wrapper,
         on_notify_shown=None,
         on_user_action_complete=_on_user_action_complete,
-        sm_notify_v2_getter=lambda: bool(getattr(controller.cfg, "sm_notify_v2", False)),
+        sm_notify_v2_getter=lambda: bool(
+            getattr(getattr(controller, "cfg", None), "sm_notify_v2", False)
+        ),
+    )
+
+    def _handle_notify_config_change():
+        """配置更新回调：根据 notify_enabled 控制 NotifierService 的启动/停止"""
+        try:
+            if controller is None:
+                log_exception_summary(
+                    log,
+                    "DIAG_EXCEPTION",
+                    "notify config change with no controller",
+                    "degrade_continue",
+                    detail="controller is None in _handle_notify_config_change",
+                    reason_code="E_NOTIFY_CFG_NO_CONTROLLER",
+                )
+                return
+            notify_enabled = getattr(controller.cfg, "notify_enabled", True)
+            is_running = notifier_service._thread is not None and notifier_service._thread.is_alive()
+
+            if not notify_enabled and is_running:
+                # 配置为 False 且服务正在运行：停止服务并清理状态
+                log.info("notify_enabled changed to False, stopping notifier service")
+                notifier_service.stop(timeout_s=2.0)
+                # 关闭当前通知窗口（必须在 GUI 线程执行）
+                dispatcher.post(lambda: notify_controller.hide("config_disabled"))
+                # 清理 NotificationManager 运行时状态
+                notification_manager.reset_runtime_state()
+                log.info("notifier service stopped and state cleaned")
+            elif notify_enabled and not is_running:
+                # 配置为 True 且服务未运行：启动服务
+                log.info("notify_enabled changed to True, starting notifier service")
+                notifier_service.start()
+                log.info("notifier service started")
+        except Exception as e:
+            log.exception("_handle_notify_config_change failed: %s", e)
+
+    _notify_runtime_initialized = {"v": False}
+    _notify_runtime_lock = threading.Lock()
+
+    def _ensure_notify_runtime_initialized(reason: str = "default") -> None:
+        """幂等初始化 Notify 运行时：根据最新 controller/cfg 启动服务并注册配置回调。"""
+        if _notify_runtime_initialized["v"]:
+            return
+        with _notify_runtime_lock:
+            if _notify_runtime_initialized["v"]:
+                return
+            try:
+                ctrl = controller
+                cfg = getattr(ctrl, "cfg", None) if ctrl is not None else None
+                try:
+                    notify_enabled = bool(getattr(cfg, "notify_enabled", True)) if cfg is not None else True
+                except Exception:
+                    notify_enabled = True
+
+                if ctrl is None:
+                    # 后端仍未就绪：记录一次降级日志与诊断事件，但不记为已初始化，后续可重试
+                    log_exception_summary(
+                        log,
+                        "DIAG_EXCEPTION",
+                        "notify runtime init skipped (no controller)",
+                        "degrade_continue",
+                        detail="controller is None in _ensure_notify_runtime_initialized",
+                        reason_code="E_NOTIFY_CFG_NO_CONTROLLER",
+                    )
+                    diag.emit(
+                        "DIAG_NOTIFY_SERVICE_SKIPPED",
+                        log,
+                        "通知服务未启动（controller 缺失或配置关闭）",
+                        has_controller=False,
+                        notify_enabled=bool(notify_enabled),
+                        reason=reason,
+                    )
+                    return
+
+                is_running = notifier_service._thread is not None and notifier_service._thread.is_alive()
+                if notify_enabled and not is_running:
+                    diag.emit(
+                        "DIAG_NOTIFY_SERVICE_START",
+                        log,
+                        "尝试启动通知服务",
+                        reason=reason,
+                        notify_enabled=bool(notify_enabled),
+                    )
+                    notifier_service.start()
+
+                # 注册配置更新回调，仅在 controller 就绪后执行
+                try:
+                    ctrl._notify_config_callback = _handle_notify_config_change
+                except Exception as e:
+                    log_exception_summary(
+                        log,
+                        "DIAG_EXCEPTION",
+                        "set notify config callback",
+                        "degrade_continue",
+                        detail=str(e)[:200],
+                        reason_code="E_NOTIFY_CONFIG_CB_SET",
+                    )
+
+                _notify_runtime_initialized["v"] = True
+            except Exception as e:
+                log_exception_summary(
+                    log,
+                    "DIAG_EXCEPTION",
+                    "notify runtime init failed",
+                    "degrade_continue",
+                    detail=str(e)[:200],
+                    reason_code="E_NOTIFY_RUNTIME_INIT",
     )
 
     exit_requested = {"v": False}
@@ -563,6 +690,19 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
         gui_loop_ready["v"] = True
         notify_controller.set_gui_loop_ready()
         diag.emit("DIAG_GUI_LOOP", log, "GUI消息循环已进入")
+        # GUI loop 就绪后，若后端 controller 已就绪，则按需初始化 Notify 运行时（幂等，多次调用安全）
+        try:
+            if controller_ready.get("value"):
+                _ensure_notify_runtime_initialized(reason="gui_loop_start")
+        except Exception as e:
+            log_exception_summary(
+                log,
+                "DIAG_EXCEPTION",
+                "notify runtime init on gui loop start",
+                "degrade_continue",
+                detail=str(e)[:200],
+                reason_code="E_NOTIFY_RUNTIME_INIT",
+            )
         diag.emit("DIAG_APP_START_OK", log, "启动成功")
         # Rest 静默加载：提前创建 overlay 窗口并加载 URL，首显时仅 ready 后再 show 避免黑屏
         try:
@@ -589,9 +729,21 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
                 diag.emit("DIAG_NOTIFY_SHOW", log, "通知窗开始展示", mode="", is_paused=False, dnd=False, blocked_reason="")
             notify_controller.check_and_do_preload()
             result = notify_controller.show(task.extra, task.prompt_key)
-            # result=True 表示已投递展示，此时才播放音效
+            # result=True 表示已投递展示，此时才播放音效；同时尊重 notify_enabled/notify_sound_enabled 开关
             if result is True:
-                _play_notify_sound()
+                try:
+                    cfg = getattr(controller, "cfg", None) if controller is not None else None
+                    notify_enabled = bool(getattr(cfg, "notify_enabled", True)) if cfg is not None else True
+                    notify_sound_enabled = bool(getattr(cfg, "notify_sound_enabled", True)) if cfg is not None else True
+                except Exception:
+                    notify_enabled = True
+                    notify_sound_enabled = True
+                if notify_enabled and notify_sound_enabled:
+                    _play_notify_sound(
+                        prompt_key=getattr(task, "prompt_key", None),
+                        notify_enabled=notify_enabled,
+                        notify_sound_enabled=notify_sound_enabled,
+                    )
             # on_notify_complete(True) 延后到用户点击时由 bridge 回调
             if result is not True:
                 try:
@@ -633,6 +785,9 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
 
         while not stop_event.is_set() and not exit_requested["v"]:
             try:
+                # 后端 controller 延迟就绪的场景下，在 GUI 循环中补一次 Notify 初始化（幂等）
+                if (not _notify_runtime_initialized["v"]) and controller_ready.get("value"):
+                    _ensure_notify_runtime_initialized(reason="controller_ready_in_gui_loop")
                 notify_controller.check_and_do_preload()
                 dispatcher.run_pending(
                     notify_handler=_handle_notify_task,

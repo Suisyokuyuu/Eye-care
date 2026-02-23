@@ -2436,13 +2436,25 @@ onHover: function(ev, elements) {
             const startupDnd = document.getElementById('settingsStartupDnd');
             const startupShow = document.getElementById('settingsStartupShow');
             const idleThresholdInput = document.getElementById('settingsIdleThreshold');
+            const notifyEnabledCheckbox = document.getElementById('settingsNotifyEnabled');
+            const restSettingsGroup = document.getElementById('restSettingsGroup');
             const reminderIntervalInput = document.getElementById('settingsReminderInterval');
             const reminderDurationInput = document.getElementById('settingsReminderDuration');
             const reminderUnitSelect = document.getElementById('settingsReminderUnit');
             const notifyDurationInput = document.getElementById('settingsNotifyDuration');
+            const notifySoundCheckbox = document.getElementById('settingsNotifySound');
             const restEndSoundCheckbox = document.getElementById('settingsRestEndSound');
             const base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
             if (!btn || !modal) return;
+            function updateRestSettingsVisibility() {
+                if (restSettingsGroup && notifyEnabledCheckbox) {
+                    if (notifyEnabledCheckbox.checked) {
+                        restSettingsGroup.classList.remove('hidden');
+                    } else {
+                        restSettingsGroup.classList.add('hidden');
+                    }
+                }
+            }
             function openModal() {
                 modal.classList.remove('hidden');
                 modal.classList.add('flex');
@@ -2454,6 +2466,8 @@ onHover: function(ev, elements) {
                         if (startupShow) startupShow.checked = c.startup_show_main !== false;
                         var idleSec = Math.max(3, Math.min(300, parseInt(c.idle_threshold_s, 10) || 60));
                         if (idleThresholdInput) { idleThresholdInput.value = idleSec; idleThresholdInput.min = 3; idleThresholdInput.max = 300; }
+                        if (notifyEnabledCheckbox) notifyEnabledCheckbox.checked = c.notify_enabled !== false;
+                        updateRestSettingsVisibility();
                         var workMin = Math.max(1, Math.min(600, parseInt(c.reminder_work_minutes, 10) || 20));
                         if (reminderIntervalInput) { reminderIntervalInput.value = workMin; reminderIntervalInput.min = 1; reminderIntervalInput.max = 600; }
                         var unit = (c.reminder_rest_unit === 'min' || c.reminder_rest_unit === 'sec') ? c.reminder_rest_unit : 'sec';
@@ -2466,6 +2480,7 @@ onHover: function(ev, elements) {
                             else { reminderDurationInput.value = Math.max(5, Math.min(3600, restSec)); reminderDurationInput.min = 5; reminderDurationInput.max = 3600; }
                         }
                         if (notifyDurationInput) notifyDurationInput.value = String(c.notify_auto_hide_seconds ?? 20);
+                        if (notifySoundCheckbox) notifySoundCheckbox.checked = c.notify_sound_enabled !== false;
                         if (restEndSoundCheckbox) restEndSoundCheckbox.checked = c.rest_end_sound_enabled !== false;
                     }
                 }).catch(function() {});
@@ -2495,9 +2510,11 @@ onHover: function(ev, elements) {
                     startup_dnd: startupDnd ? startupDnd.checked : false,
                     startup_show_main: startupShow ? startupShow.checked : true,
                     idle_threshold_s: idleSec,
+                    notify_enabled: notifyEnabledCheckbox ? notifyEnabledCheckbox.checked : true,
                     reminder_work_minutes: workMin,
                     reminder_rest_seconds: restSec,
                     reminder_rest_unit: unit,
+                    notify_sound_enabled: notifySoundCheckbox ? notifySoundCheckbox.checked : true,
                     rest_end_sound_enabled: restEndSoundCheckbox ? restEndSoundCheckbox.checked : true
                 };
                 if (notifyDurationInput) {
@@ -2518,6 +2535,9 @@ onHover: function(ev, elements) {
             if (closeBtn) closeBtn.addEventListener('click', closeModal);
             if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
             if (applyBtn) applyBtn.addEventListener('click', saveAndClose);
+            if (notifyEnabledCheckbox) {
+                notifyEnabledCheckbox.addEventListener('change', updateRestSettingsVisibility);
+            }
             window.ui = window.ui || {};
             window.ui.openSettings = openModal;
             // 检查更新按钮已迁移到主界面按钮栏
