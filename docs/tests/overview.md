@@ -1,5 +1,5 @@
 ---
-title: 测试总览（含卡死场景，适用应用版本 V1.0.2）
+title: 测试总览（含卡死场景，适用应用版本 V1.0.3）
 ---
 
 本目录用于描述 EyE Care 项目的自动化测试设计与现状，实现与规划并存，方便开发、测试和验收人员统一对齐。
@@ -41,12 +41,14 @@ title: 测试总览（含卡死场景，适用应用版本 V1.0.2）
 
 - **卡死检测器（HangDetector）**
   - 位于 `tests/hang_scenarios/conftest.py`。
-  - 当前实现：
-    - 仅保存 `debug.log` 路径；
-    - 提供 `wait_healthy_or_timeout(timeout_s, mode="simple_timeout")`，以“未超时”视为粗粒度“未明显卡死”。
-  - 规划中的扩展能力（参考 DEADLOCK_ANALYSIS 与《卡》文档）：
-    - 解析 `DIAG_METRIC_DISPATCH` 等诊断事件，判断 GUI 调度是否前进；
-    - 综合评估 `queue_len`、心跳间隔、用户诊断日志等多维信号。
+  - 当前实现（基于 `eye_care.diagnostics.notify_hang_analyzer`）：
+    - 解析 `debug.log` 中的 `DIAG_SM_TRANSITION`（notify 状态机迁移）、`DIAG_EXCEPTION`（含 `reason_code`）、`DIAG_METRIC_DISPATCH` / `DIAG_METRIC_NOTIFY` 以及一组关键 ALWAYS_ON 事件；
+    - 提供 `wait_healthy_or_timeout(timeout_s, mode="generic"|"notify_hide", require_min_hide_pairs: int|None = None)`：
+      - 在给定时间内等待 `debug.log` 产出，否则视为异常；
+      - 优先检查 `DIAG_FLASK_TIMEOUT`、`DIAG_NOTIFY_ACK_POST_FAILED` 等 ALWAYS_ON 事件，一旦命中直接视为本轮场景失败（疑似卡死或链路严重降级）；
+      - 对 notify HIDING→HIDDEN 链路做健康度检查：若存在仍处于 HIDING 且未匹配到 HIDE_DONE 的会话，或在 `mode="notify_hide"` 下出现耗时超过阈值的 HIDING，会视为疑似卡死；
+      - 可选地通过 `require_min_hide_pairs` 要求至少观察到一定数量的 HIDE_REQ/HIDE_DONE 闭环，避免“完全未覆盖核心链路也通过”的假阳性。
+  - 后续仍可结合 DEADLOCK_ANALYSIS 与《卡》文档，进一步在此基础上接入更多诊断事件（如 `DIAG_NOTIFY_STAGE` / `DIAG_REST_STAGE` 等），丰富判定信号。
 
 ### 卡死场景测试总览
 

@@ -131,6 +131,7 @@ dist\EyE Care\
 - 数据规范
 - GUI 调度约束
 - 诊断事件字典
+- 自动化测试与卡死场景：见 `docs/tests/overview.md`、`docs/tests/hang_scenarios.md`
 
 ---
 

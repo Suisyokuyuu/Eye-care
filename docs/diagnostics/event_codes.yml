@@ -152,6 +152,39 @@ canonical_entries:
     owner: ui_shell
     since_version: FN14
 
+  - event_code: DIAG_WM_CLOSE_INTERCEPT
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    module: runtime
+    throttle_key: DIAG_WM_CLOSE_INTERCEPT
+    required_kv: []
+    fallback_semantics: none
+    owner: runtime
+    since_version: FN15
+
+  - event_code: DIAG_WM_CLOSE_INTERCEPTED
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    module: runtime
+    throttle_key: DIAG_WM_CLOSE_INTERCEPTED
+    required_kv: []
+    fallback_semantics: none
+    owner: runtime
+    since_version: FN15
+
+  - event_code: DIAG_WM_CLOSE_FALLBACK
+    kind: event
+    level: WARNING
+    policy: ALWAYS_ON
+    module: runtime
+    throttle_key: DIAG_WM_CLOSE_FALLBACK
+    required_kv: []
+    fallback_semantics: degrade_continue
+    owner: runtime
+    since_version: FN15
+
   - event_code: DIAG_DISPATCH_ILLEGAL
     kind: event
     level: ERROR
@@ -447,6 +480,17 @@ canonical_entries:
     fallback_semantics: continue_best_effort
     owner: shutdown
     since_version: FN14
+
+  - event_code: DIAG_EXIT_TOAST
+    kind: event
+    level: INFO
+    policy: ALWAYS_ON
+    module: runtime
+    throttle_key: DIAG_EXIT_TOAST
+    required_kv: [reason]
+    fallback_semantics: none
+    owner: shutdown
+    since_version: FN15
 
   - event_code: DIAG_EXCEPTION
     kind: event
@@ -1149,6 +1193,13 @@ reason_codes:
     throttle_window_s: 30
     include_stack: false
     owner: main
+
+  - code: E_EXIT_TOAST_FAILED
+    level: WARNING
+    policy: ALWAYS_ON
+    throttle_window_s: 30
+    include_stack: false
+    owner: runtime
 
 aliases:
   DIAG_FLASK_WAIT: DIAG_CONTROLLER_INIT

@@ -1,10 +1,26 @@
 ---
-title: 卡死场景测试说明（hang_scenarios，适用应用版本 V1.0.2）
+title: 卡死场景测试说明（hang_scenarios，适用应用版本 V1.0.3）
 ---
 
 本文件聚焦 `tests/hang_scenarios/` 目录下的卡死场景测试设计，基于当前测试代码整理，并参考《卡》计划文档（`.cursor/plans/卡_9678f5ad.plan.md`）中的场景定义与目标。
 
 > **原则**：描述以现在的实际代码为准；若计划文档与实现存在差异，以本说明和测试代码为权威来源。
+
+### 运行方式与基本用法
+
+- **运行全部卡死场景**
+  - 从项目根目录执行：
+    - `pytest -m hang_scenario tests/hang_scenarios -vv`
+- **仅运行短场景（排除长时压力）**
+  - 适合开发阶段快速回归：
+    - `pytest -m "hang_scenario and not long" tests/hang_scenarios -vv`
+- **按场景名称筛选**
+  - 例如仅运行 notify HIDING 场景 F：
+    - `pytest -m hang_scenario -k scenario_f_notify_hide tests/hang_scenarios -vv`
+- **日志与数据目录**
+  - 各场景运行时由 `AppRunner` 自动为每次 pytest 会话创建独立的数据目录：`user_data_test_<timestamp>_<pid>_<uniq>/`；
+  - 被测应用的诊断日志统一写入对应目录下的 `debug.log`，`HangDetector` 与 `notify_hang_analyzer` 即基于该文件进行离线分析；
+  - 若需排查失败用例，可按修改时间倒序查找最近的 `user_data_test_*` 目录，并结合其中的 `debug.log` 与 `HangDetector` 输出做进一步诊断。
 
 ### 公共基础能力
 
@@ -45,6 +61,40 @@ title: 卡死场景测试说明（hang_scenarios，适用应用版本 V1.0.2）
       - 在 timeout 窗口前 60% 时间内以约 0.8 秒间隔多轮触发 `POST /api/debug/notify`，放大“前端 ACK → `_schedule_actual_show_from_ack` → `_do_actual_show`”路径的覆盖；
       - 若整个主动 show 段一次 notify 都未成功触发，则直接视为场景失败，避免假阳性。
   - 其余场景暂以“就绪后 sleep 一段时间”的占位实现，后续可继续替换为更高保真度的 HTTP/控制类调用。
+
+### 关键诊断信号与判定规则
+
+- **核心工具链**
+  - `HangDetector`：测试侧统一的“卡死判定器”，位于 `tests/hang_scenarios/conftest.py`，内部调用 `eye_care.diagnostics.notify_hang_analyzer`；
+  - `notify_hang_analyzer`：对 `debug.log` 做离线解析，输出 `NotifyHangAnalysisResult`，供 `HangDetector` 使用。
+
+- **关键 ALWAYS_ON 事件（普通模式也会落盘）**
+  - 事件口径与策略来源：
+    - `docs/diagnostics/NORMAL_MODE_LOGGING.md`
+    - `docs/diagnostics/DIAG_EVENT_MAPPING.md`
+  - 其中与 hang_scenarios 判定强相关的包括：
+    - `DIAG_FLASK_TIMEOUT`
+      - 含义：后端 Flask 启动或请求处理超时，可能导致部分 API 永久不可用；
+      - 行为：一旦在场景对应的 `debug.log` 中出现，`HangDetector.wait_healthy_or_timeout(...)` 会直接返回失败，视为“检测到疑似异常/卡死”。
+    - `DIAG_NOTIFY_ACK_POST_FAILED`
+      - 含义：notify ACK/Show 严格投递失败，本次提醒已显式降级；
+      - 行为：同样被视为强信号，一旦命中即判定当前场景失败，避免“降级后仍报绿”。
+
+- **扩展的高危诊断信号（用于报告与人工分析）**
+  - `notify_hang_analyzer` 还会统计以下事件的出现次数，并在报告中展示：
+    - `DIAG_NOTIFY_ACK_NO_NATIVE`：缺少原生 notify 能力时的 ACK 处理告警；
+    - `DIAG_NOTIFY_STYLE_APPLY_FAIL`：通知样式应用失败，可能影响展示链路；
+    - `DIAG_REST_OVERLAY_CREATE_FAIL`：Rest overlay 创建失败，可能导致 rest 窗口无法正常弹出。
+  - 这些事件的具体策略（ALWAYS_ON / DEBUG_ONLY）以 `event_codes.yml` 与策略引擎为准，在 hang_scenarios 中一旦出现，通常意味着链路质量问题，建议结合场景与日志做重点排查。
+
+- **notify HIDING → HIDDEN 链路健康度**
+  - 基于 `DIAG_SM_TRANSITION` 中 `machine=notify` 的迁移记录，`notify_hang_analyzer` 会：
+    - 统计 HIDE_REQ → HIDE_DONE 的配对闭环（`hide_pairs`，可通过 `hide_pair_count` 查看数量）；
+    - 记录仍停留在 HIDING 且尚未匹配到 HIDE_DONE 的会话（`open_hiding`）。
+  - `HangDetector.wait_healthy_or_timeout(...)` 的判断规则：
+    - 如存在任意未闭合 HIDING（`open_hiding` 非空），视为疑似卡死，返回失败；
+    - 在 `mode="notify_hide"` 下，会对 HIDING → HIDDEN 的耗时做阈值判断：若 `max_hide_duration_s` 超过 `hiding_warn_threshold_s`（当前默认约 2 秒），同样视为异常；
+    - 对部分需要“最小链路覆盖”的场景（例如 notify ACK/repost guard 回归），通过 `require_min_hide_pairs` 要求至少观察到指定数量的 HIDE_REQ/HIDE_DONE 闭环，以避免“完全未触达核心链路也通过”的假阳性。
 
 ### 场景一览与设计目标
 

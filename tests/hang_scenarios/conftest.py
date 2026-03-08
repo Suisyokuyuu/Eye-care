@@ -167,6 +167,16 @@ class HangDetector:
         except FileNotFoundError:
             return False
 
+        # 先基于关键 ALWAYS_ON 诊断事件做快速失败判断：
+        # - DIAG_FLASK_TIMEOUT：后端 Flask 启动超时，可能导致部分 API 永久不可用；
+        # - DIAG_NOTIFY_ACK_POST_FAILED：notify ACK/Show 严格投递失败，本次提醒已显式降级。
+        # 这些事件在 NORMAL_MODE_LOGGING 中被标记为 ALWAYS_ON，出现在 hang_scenarios 中通常意味着
+        # 回归或环境异常，因此一旦命中便视为“检测到疑似异常/卡死”。
+        if result.flask_timeout_count > 0:
+            return False
+        if result.notify_ack_post_failed_count > 0:
+            return False
+
         # 通用规则：若仍存在未闭合 HIDING，会话视为可疑。
         if result.open_hiding:
             return False

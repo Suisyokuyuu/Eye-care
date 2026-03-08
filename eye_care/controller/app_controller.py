@@ -88,7 +88,11 @@ class AppController:
         # auto_idle 防闪烁：记录进入 auto_idle 的时间，退出前需保持最小持续时间
         self._auto_idle_entered_at: float = 0.0
         self._auto_idle_min_duration: float = 1.0  # 最小保持 1 秒
-        self._load_app_paths()
+        # app_paths 后台加载：异步加载，避免阻塞启动
+        self._app_paths_loaded = threading.Event()
+        self._app_paths_loading = False
+        # 在后台线程异步加载 app_paths
+        threading.Thread(target=self._load_app_paths, daemon=True, name="app_paths_loader").start()
 
         # minute_usage 口径：不再维护 timeline_segments；每秒 add_usage，Repo 负责按分钟聚合落盘。
 
@@ -145,29 +149,66 @@ class AppController:
             log.exception("exit_state: apply need_merge failed")
 
     def _load_app_paths(self) -> None:
-        """从 data_dir/app_paths.json 加载 app_short -> exe_path，供图标 API 使用。"""
-        p = self.data_dir / "app_paths.json"
+        """从 data_dir/app_paths.json 加载 app_short -> exe_path，供图标 API 使用。
+        
+        可在后台线程异步调用，也可同步调用（通过 _ensure_app_paths_loaded）。
+        """
+        with self._lock:
+            if self._app_paths_loading:
+                return  # 已在加载中，避免重复
+            self._app_paths_loading = True
+        
         try:
+            p = self.data_dir / "app_paths.json"
             if p.exists():
                 raw = json.loads(p.read_text(encoding="utf-8") or "{}")
                 if isinstance(raw, dict):
                     stale: list[str] = []
-                    for k, v in raw.items():
-                        if not k or not v:
-                            continue
-                        app_short = str(k)
-                        exe_path = str(v)
-                        exe = Path(exe_path)
-                        if exe.exists():
-                            self._app_paths[app_short] = exe_path
-                        else:
-                            stale.append(app_short)
+                    with self._lock:
+                        for k, v in raw.items():
+                            if not k or not v:
+                                continue
+                            app_short = str(k)
+                            exe_path = str(v)
+                            exe = Path(exe_path)
+                            if exe.exists():
+                                self._app_paths[app_short] = exe_path
+                            else:
+                                stale.append(app_short)
                     if stale:
                         log.info("app_paths: removed %d stale entries on load", len(stale))
                         # 冷启动 GC 后立即持久化，确保磁盘上的 app_paths.json 收敛
                         self._persist_app_paths()
         except Exception:
             log.exception("load app_paths failed")
+        finally:
+            with self._lock:
+                self._app_paths_loading = False
+                self._app_paths_loaded.set()
+    
+    def _ensure_app_paths_loaded(self, timeout: float = 2.0) -> None:
+        """确保 app_paths 已加载，如果未加载则等待（最多 timeout 秒）。
+        
+        如果超时仍未加载完成，则降级返回空字典（调用方需处理空字典情况）。
+        """
+        if self._app_paths_loaded.is_set():
+            return  # 已加载完成
+        
+        # 注意：不要在持锁状态下执行 _load_app_paths()，否则文件 IO 会被"外层锁"包住。
+        # 这里锁内只做状态判断；需要同步加载时，锁外执行。
+        should_sync_load = False
+        with self._lock:
+            if (not self._app_paths_loading) and (not self._app_paths_loaded.is_set()):
+                should_sync_load = True
+        if should_sync_load:
+            # 立即同步加载（例如后台线程还没跑起来/加载失败未 set event）
+            # 注意：即使 _load_app_paths() 因后台线程已开始加载而立即返回，
+            # 我们仍需要统一走 wait(timeout) 确保加载完成，避免竞态。
+            self._load_app_paths()
+        
+        # 等待加载完成（最多 timeout 秒），统一处理同步加载和后台加载两种情况
+        if not self._app_paths_loaded.wait(timeout=timeout):
+            log.warning("app_paths 加载超时（%s秒），返回空字典降级", timeout)
 
     def _persist_app_paths(self) -> None:
         """将 _app_paths 写入 app_paths.json（供下次启动与图标 API）。"""
@@ -585,8 +626,10 @@ class AppController:
     def _get_runtime_extra(self, mark_prompted: bool = False):
         """构建当前运行时的 extra 字典（app_paths, rest, state 等），供 snapshot_today / snapshot_for_date 共用。
 
-        mark_prompted=True 时，会在 should_prompt 出现时立刻标记为已提醒，避免被 UI 拉取提前“消费”。
+        mark_prompted=True 时，会在 should_prompt 出现时立刻标记为已提醒，避免被 UI 拉取提前"消费"。
         """
+        # 确保 app_paths 已加载（超时降级为空字典）
+        self._ensure_app_paths_loaded(timeout=2.0)
         now = time.time()
         with self._lock:
             app_paths = dict(self._app_paths)
@@ -734,6 +777,11 @@ class AppController:
             self._rest_next_prompt_work_s = int(self._cont_work_s) + int(max(60, thr_s))
 
     def get_app_paths(self) -> dict[str, str]:
+        """获取 app_paths 字典。如果尚未加载完成，会等待最多2秒。
+        
+        超时后返回空字典（降级处理）。
+        """
+        self._ensure_app_paths_loaded(timeout=2.0)
         with self._lock:
             return dict(self._app_paths)
 
