@@ -47,12 +47,14 @@ class NotifyHangAnalysisResult:
     hide_pairs: List[HidePair]
     # 仍停留在 HIDING（有 HIDE_REQ 但尚未匹配到 HIDE_DONE）
     open_hiding: Dict[str, _dt.datetime]
-    # 相关 reason_code 计数
+    # 与简化淡出链路等相关的 reason_code 计数
     reason_code_counts: Dict[str, int]
     # DIAG_METRIC_* 概览
     metric_dispatch_count: int
     metric_dispatch_last_ts: Optional[_dt.datetime]
     metric_notify_last_ts: Optional[_dt.datetime]
+    # 关键 ALWAYS_ON 事件计数（用于 hang_scenarios 中的健康判定）
+    critical_event_counts: Dict[str, int]
 
     @property
     def hide_pair_count(self) -> int:
@@ -64,6 +66,16 @@ class NotifyHangAnalysisResult:
         if not self.hide_pairs:
             return 0.0
         return max(p.duration_s for p in self.hide_pairs)
+
+    @property
+    def flask_timeout_count(self) -> int:
+        """DIAG_FLASK_TIMEOUT 出现次数（后端启动超时告警）。"""
+        return self.critical_event_counts.get("DIAG_FLASK_TIMEOUT", 0)
+
+    @property
+    def notify_ack_post_failed_count(self) -> int:
+        """DIAG_NOTIFY_ACK_POST_FAILED 出现次数（ACK/Show 严格投递失败）。"""
+        return self.critical_event_counts.get("DIAG_NOTIFY_ACK_POST_FAILED", 0)
 
 
 _SM_LINE_RE = re.compile(
@@ -92,6 +104,18 @@ _NOTIFY_REASON_CODES = {
     "E_NOTIFY_AFTER_SIMPLE_FADE",
     "E_NOTIFY_SCHEDULE_AFTER_FADE",
     "E_NOTIFY_TIMEOUT_SIMPLE",
+}
+
+
+_CRITICAL_ALWAYS_ON_EVENTS = {
+    # 后端 / Flask 相关
+    "DIAG_FLASK_TIMEOUT",
+    # notify ACK / Show 严格投递相关
+    "DIAG_NOTIFY_ACK_POST_FAILED",
+    "DIAG_NOTIFY_ACK_NO_NATIVE",
+    # notify/rest 样式与 overlay 高危降级事件
+    "DIAG_NOTIFY_STYLE_APPLY_FAIL",
+    "DIAG_REST_OVERLAY_CREATE_FAIL",
 }
 
 
@@ -158,6 +182,7 @@ def analyze_debug_log_lines(
     metric_dispatch_count = 0
     metric_dispatch_last_ts: Optional[_dt.datetime] = None
     metric_notify_last_ts: Optional[_dt.datetime] = None
+    critical_events: Dict[str, int] = {}
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -210,6 +235,11 @@ def analyze_debug_log_lines(
         if m_mn:
             metric_notify_last_ts = _parse_ts(m_mn.group("ts"))
 
+        # 4) 关键 ALWAYS_ON 事件（通过简单子串匹配计数）
+        for code in _CRITICAL_ALWAYS_ON_EVENTS:
+            if code in line:
+                critical_events[code] = critical_events.get(code, 0) + 1
+
     return NotifyHangAnalysisResult(
         hide_pairs=hide_pairs,
         open_hiding=open_hiding,
@@ -217,6 +247,7 @@ def analyze_debug_log_lines(
         metric_dispatch_count=metric_dispatch_count,
         metric_dispatch_last_ts=metric_dispatch_last_ts,
         metric_notify_last_ts=metric_notify_last_ts,
+        critical_event_counts=critical_events,
     )
 
 
@@ -303,6 +334,14 @@ def format_report(
     lines.append(f"DIAG_METRIC_DISPATCH: count={result.metric_dispatch_count}")
     lines.append(f"DIAG_METRIC_DISPATCH last_ts={result.metric_dispatch_last_ts}")
     lines.append(f"DIAG_METRIC_NOTIFY   last_ts={result.metric_notify_last_ts}")
+
+    lines.append("")
+    lines.append("== 关键 ALWAYS_ON 事件统计 ==")
+    if result.critical_event_counts:
+        for code in sorted(result.critical_event_counts.keys()):
+            lines.append(f"{code}: {result.critical_event_counts[code]}")
+    else:
+        lines.append("未发现与 hang 诊断相关的关键 ALWAYS_ON 事件（如 DIAG_FLASK_TIMEOUT / DIAG_NOTIFY_ACK_POST_FAILED 等）。")
 
     return "\n".join(lines)
 

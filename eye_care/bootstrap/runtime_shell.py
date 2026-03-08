@@ -295,6 +295,8 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
     # M5：唯一显隐入口，close_window(hide) 与托盘 toggle 均经此同步 window_visible
     # 按配置决定启动时是否视为“已显示主界面”
     window_visible = {"v": bool(startup_show_main)}
+    # 记录主窗口是否已被底层 WinForms 销毁；一旦为 True，不再尝试 show/hide，避免 ObjectDisposedException
+    main_window_disposed = {"v": False}
 
     # 置前警告去重（函数外部定义，跨调用去重）
     _fg_warn_once: set[str] = set()
@@ -331,7 +333,11 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
 
     def _set_window_visible(visible: bool) -> None:
         """必须在 GUI 线程执行。唯一更新 window 显隐与 window_visible 的地方。"""
+        # 已请求退出或主窗口已销毁时，忽略一切显隐请求，避免访问已释放的 WinForms Form
+        if exit_requested["v"] or main_window_disposed["v"]:
+            return
         if visible:
+            success = False
             try:
                 window.show()
                 window.restore()
@@ -372,15 +378,22 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
                             if key not in _fg_warn_once:
                                 _fg_warn_once.add(key)
                                 log.warning("SetForegroundWindow returned false hwnd=%s", hwnd)
+                success = True
             except Exception:
                 log_exception_summary(log, "DIAG_EXCEPTION", "主窗口显示", "show/restore/bring_to_front 失败")
-            window_visible["v"] = True
+            # 只在成功时才更新状态，避免假状态
+            if success:
+                window_visible["v"] = True
         else:
+            success = False
             try:
                 window.hide()
+                success = True
             except Exception:
                 log_exception_summary(log, "DIAG_EXCEPTION", "主窗口隐藏", "hide 失败")
-            window_visible["v"] = False
+            # 只在成功时才更新状态，避免假状态
+            if success:
+                window_visible["v"] = False
 
     set_visible_cb = getattr(api, "set_visible_cb", None)
     if callable(set_visible_cb):
@@ -704,18 +717,24 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
                 reason_code="E_NOTIFY_RUNTIME_INIT",
             )
         diag.emit("DIAG_APP_START_OK", log, "启动成功")
-        # Rest 静默加载：提前创建 overlay 窗口并加载 URL，首显时仅 ready 后再 show 避免黑屏
-        try:
-            rest_controller._lazy_init_overlays()
-        except Exception as e:
-            log_exception_summary(
-                log,
-                "DIAG_EXCEPTION",
-                "rest lazy init overlays",
-                "degrade_continue",
-                detail=str(e)[:200],
-                reason_code="E_REST_LAZY_INIT_OVERLAYS",
-            )
+        # Rest 静默加载：延迟到首屏稳定后（1s后）创建 overlay 窗口并加载 URL，首显时仅 ready 后再 show 避免黑屏
+        def _delayed_rest_overlay_init():
+            """延迟初始化 Rest overlay，避免阻塞首屏渲染"""
+            try:
+                rest_controller._lazy_init_overlays()
+            except Exception as e:
+                log_exception_summary(
+                    log,
+                    "DIAG_EXCEPTION",
+                    "rest lazy init overlays",
+                    "degrade_continue",
+                    detail=str(e)[:200],
+                    reason_code="E_REST_LAZY_INIT_OVERLAYS",
+                )
+        # 延迟1秒后投递到 GUI 线程执行
+        _t = threading.Timer(1.0, lambda: dispatcher.post(_delayed_rest_overlay_init))
+        _t.daemon = True
+        _t.start()
 
         def _handle_notify_task(task):
             try:
@@ -837,13 +856,41 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
                 time.sleep(0.016)
         return
 
+    def _show_exit_notification(reason: str) -> None:
+        """在非托盘主动退出时，尝试弹出一次 Windows 通知，提示 EyE Care 已关闭。"""
+        try:
+            from win10toast import ToastNotifier
+
+            msg = "EyE Care 已关闭，如需继续保护视力，请从开始菜单或桌面快捷方式重新打开。"
+            ToastNotifier().show_toast("EyE Care", msg, duration=5, threaded=True)
+            diag.emit("DIAG_EXIT_TOAST", log, "退出通知已展示", reason=reason)
+        except Exception as e:
+            # 通知失败不影响退出流程
+            log_exception_summary(
+                log,
+                "DIAG_EXCEPTION",
+                "exit toast failed",
+                "degrade_continue",
+                detail=str(e)[:200],
+                reason_code="E_EXIT_TOAST_FAILED",
+            )
+
     def _request_exit(reason: str, destroy_window: bool = False) -> None:
-        """请求退出（不强杀进程）：设退出标志、停调度闸门、按序停服务，让 webview.start() 自然返回。"""
+        """请求退出（不强杀进程）：设退出标志、停调度闸门、按序停服务，让 webview.start() 自然返回。
+        
+        退出路径：
+        - 托盘菜单退出（tray_quit）
+        - 窗口关闭兜底（window_closed_fallback）
+        - 其他主动退出场景
+        """
         if exit_requested["v"]:
             diag.emit("DIAG_EXIT", log, "重复退出请求已忽略", reason=reason)
             return
         exit_requested["v"] = True
         diag.emit("DIAG_EXIT", log, "已请求退出", reason=reason)
+        # 仅在“窗口关闭”类原因下弹出提示，不打扰通过托盘正常退出的用户
+        if reason in ("window_closed_no_tray", "window_closed_fallback"):
+            _show_exit_notification(reason)
         try:
             stop_event.set()
         except Exception as e:
@@ -1030,9 +1077,23 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
     # 在后台线程初始化托盘，不阻塞窗口显示
     threading.Thread(target=_init_tray_async, daemon=True, name="tray_init").start()
 
+    # 窗口关闭事件兜底：主窗口被底层销毁时，触发整体退出（当前不再依赖 WM_CLOSE 拦截）
     def on_closed():
-        """窗口关闭事件：干净退出(正确注销窗口类)"""
-        _request_exit("window_closed", destroy_window=False)
+        """窗口关闭事件兜底：主窗口已被底层销毁，此时不再尝试隐藏/恢复，而是触发整体退出"""
+        # 当前已不再使用 WM_CLOSE 拦截；该事件是主窗口被关闭后的统一退出路径
+        # 但一旦触发，说明 WinForms Form 已被 Dispose，继续复用 window 只会导致 ObjectDisposedException
+        if exit_requested["v"]:
+            return  # 程序主动退出，不需要处理
+
+        # 标记主窗口已销毁；后续显隐请求一律忽略，避免再访问已释放的句柄
+        main_window_disposed["v"] = True
+        # 同步更新可见性标志，避免托盘在退出完成前读取到过期的 True
+        window_visible["v"] = False
+
+        # 兜底策略：无论托盘是否可用，都触发一次干净的退出流程，而不是假装“隐藏到托盘”
+        diag.emit("DIAG_WM_CLOSE_FALLBACK", log, "closed事件触发，主窗口已销毁，触发退出")
+        # 此时底层窗口已销毁，_request_exit 不再尝试 destroy_window，避免二次销毁异常
+        dispatcher.post(lambda: _request_exit("window_closed_fallback", destroy_window=False))
 
     window.events.closed += on_closed
     diag.emit("DIAG_PYWEBVIEW_START", log, "pywebview即将启动")
