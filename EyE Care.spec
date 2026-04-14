@@ -1,33 +1,37 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 
 import os
 
 # 获取项目根目录
 project_root = os.path.dirname(os.path.abspath(SPEC))
 
-# 注意：不打包 user_data 目录！user_data 目录在运行时动态创建
+# 注意：不打包 user_data 目录，user_data 目录在运行时动态创建
 a = Analysis(
     ['main.py'],
     pathex=[project_root],
     binaries=[],
     datas=[
-        # eye_care 包
         ('eye_care', 'eye_care'),
-        # docs 文档
         ('docs', 'docs'),
-        # 图标
         ('icon.ico', '.'),
         ('icon.png', '.'),
-        # 配置文件（打包后放到外层）
         ('requirements.txt', '.'),
         ('README.md', '.'),
         ('version_info.txt', '.'),
     ],
     hiddenimports=[
         'webview',
-        'pywebview',
         'PIL',
         'PIL.Image',
+        'eye_care.qt',
+        'eye_care.qt.runtime_shell',
+        'PySide6',
+        'PySide6.QtCore',
+        'PySide6.QtGui',
+        'PySide6.QtWidgets',
+        'PySide6.QtWebEngineCore',
+        'PySide6.QtWebEngineWidgets',
+        'PySide6.QtWebChannel',
     ],
     hookspath=[],
     hooksconfig={},
@@ -67,8 +71,3 @@ coll = COLLECT(
     upx_exclude=[],
     name='EyE Care',
 )
-
-# 打包后处理：将资源文件从 _internal 复制到外层
-# 具体操作在 build_exe.bat 中完成：
-# 1. 复制 eye_care\docs\icon.* 到外层
-# 2. 创建 user_data 目录

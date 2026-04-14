@@ -1142,20 +1142,38 @@
                     monthReqId += 1;
                     var rid = monthReqId;
 
-                    var base = window.location.origin;
-                    var url = base + "/api/calendar_month?year=" + year + "&month=" + (month0 + 1);
+                    function applyMonthData(data) {
+                        if (rid !== monthReqId) return;
 
-                    return fetch(url)
-                        .then(function(r) { return r.json(); })
+                        var set = {};
+                        var arr = (data && data.days_with_data) ? data.days_with_data : [];
+                        for (var i = 0; i < arr.length; i++) set[arr[i]] = true;
+
+                        monthDataSet = set;
+                        monthDataCache[key] = { set: set, ts: Date.now() };
+                    }
+
+                    function fallbackHttp() {
+                        var base = window.location.origin;
+                        var url = base + "/api/calendar_month?year=" + year + "&month=" + (month0 + 1);
+                        return fetch(url).then(function(r) { return r.json(); });
+                    }
+
+                    var qtCall = (typeof window.__EYECARE_QT_CALL__ === 'function')
+                        ? window.__EYECARE_QT_CALL__('getCalendarMonth', [year, month0 + 1])
+                        : (window.__EYECARE_QT_CHANNEL_PROMISE__
+                            ? window.__EYECARE_QT_CHANNEL_PROMISE__.then(function() {
+                                if (typeof window.__EYECARE_QT_CALL__ === 'function') {
+                                    return window.__EYECARE_QT_CALL__('getCalendarMonth', [year, month0 + 1]);
+                                }
+                                throw new Error('qt bridge not ready');
+                            })
+                            : Promise.reject(new Error('qt bridge unavailable')));
+
+                    return qtCall
+                        .catch(function() { return fallbackHttp(); })
                         .then(function(data) {
-                            if (rid !== monthReqId) return; // 乱序：丢弃旧响应
-
-                            var set = {};
-                            var arr = (data && data.days_with_data) ? data.days_with_data : [];
-                            for (var i = 0; i < arr.length; i++) set[arr[i]] = true;
-
-                            monthDataSet = set;
-                            monthDataCache[key] = { set: set, ts: Date.now() };
+                            applyMonthData(data || {});
                         })
                         .catch(function() {
                             if (rid !== monthReqId) return;
@@ -1374,11 +1392,7 @@
             btn.addEventListener('click', function() {
                 const isDnd = btn.getAttribute('data-dnd') === 'true';
                 const nextDnd = !isDnd;
-                fetch(base + '/api/dnd', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ on: nextDnd })
-                }).then(function(r) { return r.json(); }).then(function(data) {
+                setDndViaBridgeOrHttp(nextDnd).then(function(data) {
                     if (data && !data.error) setDndUi(!!data.dnd);
                     else setDndUi(nextDnd);
                 }).catch(function() { setDndUi(nextDnd); });
@@ -1463,7 +1477,7 @@
 
             var REST_DURATION_MIN_SEC = 5;
             function loadConfig() {
-                fetch(base + '/api/config').then(function(r) { return r.json(); }).then(function(data) {
+                getConfigViaBridgeOrHttp().then(function(data) {
                     if (data.error) return;
                     const c = data.config || {};
                     var workMin = Math.max(1, parseInt(c.reminder_work_minutes, 10) || 20);
@@ -1486,7 +1500,7 @@
             }
 
             function saveConfig(payload) {
-                fetch(base + '/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(function() {});
+                updateConfigViaBridgeOrHttp(payload).catch(function() {});
             }
 
             function applyIntervalDelta(delta) {
@@ -1891,9 +1905,7 @@
                 window.currentAppChart = null;
             }
             var viewDate = (typeof window.getViewDateStr === 'function') ? window.getViewDateStr() : (new Date().toISOString().split('T')[0]);
-            var base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-            var url = base + '/api/app_details?app=' + encodeURIComponent(appKey) + '&days=7&date=' + encodeURIComponent(viewDate);
-            fetch(url).then(function(res) { return res.json(); }).then(function(json) {
+            getAppDetailsViaBridgeOrHttp({ app: appKey, days: 7, date: viewDate }).then(function(json) {
                 if (json.error) {
                     console.warn('app_details failed', json.error);
                     renderAppChartFallback(ctx, [0, 0, 0, 0, 0, 0, 0], ['日1', '日2', '日3', '日4', '日5', '日6', '日7']);
@@ -2011,7 +2023,7 @@
                 categoryDetailModal.classList.add('flex');
                 if (categoryAppsSearch) categoryAppsSearch.value = '';
                 categoryAppsList.innerHTML = '<p class="text-gray-500 text-sm">加载中…</p>';
-                fetch(base + '/api/apps_list').then(function(r) { return r.json(); }).then(function(data) {
+                getAppsListViaBridgeOrHttp().then(function(data) {
                     allApps = (data && data.apps) || [];
                     renderCategoryAppsList(currentCategory, allApps);
                 }).catch(function() {
@@ -2022,7 +2034,7 @@
             window.refreshCategoryDetailIfOpen = function() {
                 if (categoryDetailModal.classList.contains('hidden')) return;
                 categoryAppsList.innerHTML = '<p class="text-gray-500 text-sm">加载中…</p>';
-                fetch(base + '/api/apps_list').then(function(r) { return r.json(); }).then(function(data) {
+                getAppsListViaBridgeOrHttp().then(function(data) {
                     allApps = (data && data.apps) || [];
                     renderCategoryAppsList(currentCategory, allApps);
                 }).catch(function() {
@@ -2458,7 +2470,7 @@ onHover: function(ev, elements) {
             function openModal() {
                 modal.classList.remove('hidden');
                 modal.classList.add('flex');
-                fetch(base + '/api/config').then(function(r) { return r.json(); }).then(function(data) {
+                getConfigViaBridgeOrHttp().then(function(data) {
                     if (data.config) {
                         var c = data.config;
                         if (launchAtLogin) launchAtLogin.checked = !!c.startup_launch_at_login;
@@ -2524,7 +2536,7 @@ onHover: function(ev, elements) {
                     notifyDurationInput.value = String(v);
                     payload.notify_auto_hide_seconds = v;
                 }
-                fetch(base + '/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+                updateConfigViaBridgeOrHttp(payload)
                     .then(function() {
                         closeModal();
                         if (typeof window.refreshRestStatusFromConfig === 'function') window.refreshRestStatusFromConfig();
@@ -2641,7 +2653,7 @@ onHover: function(ev, elements) {
                 modal.classList.add('flex');
                 if (searchInput) searchInput.value = '';
                 listEl.innerHTML = '<p class="text-gray-500 text-sm">加载中…</p>';
-                fetch(base + '/api/apps_list').then(function(r) { return r.json(); }).then(function(data) {
+                getAppsListViaBridgeOrHttp().then(function(data) {
                     allApps = (data && data.apps) || [];
                     if (allApps.length === 0) {
                         listEl.innerHTML = '<p class="text-gray-500 text-sm">暂无已记录应用</p>';
@@ -2698,7 +2710,7 @@ onHover: function(ev, elements) {
                 modal.classList.remove('hidden');
                 modal.classList.add('flex');
                 listEl.innerHTML = '<p class="text-gray-500 text-sm">加载中…</p>';
-                fetch(base + '/api/blacklist').then(function(r) { return r.json(); }).then(function(data) {
+                getBlacklistViaBridgeOrHttp().then(function(data) {
                     var apps = (data && data.apps) || [];
                     if (apps.length === 0) {
                         listEl.innerHTML = '<p class="text-gray-500 text-sm">黑名单为空</p>';
@@ -2717,8 +2729,7 @@ onHover: function(ev, elements) {
                             if (!key) return;
                             var msg = '确定从黑名单移除「' + displayName + '」？\n移除后将恢复记录该应用的屏幕时间（历史数据无法恢复）';
                             if (!(await uiConfirm(msg))) return;
-                            fetch(base + '/api/blacklist_remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app_short: key }) })
-                                .then(function(r) { return r.json(); })
+                            removeFromBlacklistViaBridgeOrHttp(key)
                                 .then(function(res) {
                                     if (res && res.error) { alert('操作失败：' + res.error); return; }
                                     openModal();
@@ -2852,19 +2863,125 @@ onHover: function(ev, elements) {
         }
 
         // 仅 HTTP：每 10s 拉 /api/snapshot，返回 { status, data } 便于埋点带 http_status
-        function fetchSnapshot(params) {
-            var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
-            if (!base || base === 'null') {
-                var loc = window.location;
-                base = (loc.protocol || 'http:') + '//' + (loc.host || '127.0.0.1');
+        function callQtBridge(method, args) {
+            args = Array.isArray(args) ? args : [];
+            var direct = typeof window.__EYECARE_QT_CALL__ === 'function'
+                ? window.__EYECARE_QT_CALL__(method, args)
+                : null;
+            if (direct) return direct;
+            if (window.__EYECARE_QT_CHANNEL_PROMISE__) {
+                return window.__EYECARE_QT_CHANNEL_PROMISE__.then(function() {
+                    if (typeof window.__EYECARE_QT_CALL__ === 'function') {
+                        return window.__EYECARE_QT_CALL__(method, args);
+                    }
+                    throw new Error('qt bridge not ready');
+                });
             }
-            var q = 'date=' + encodeURIComponent(params.date || '') + '&range=' + encodeURIComponent(params.range || 'day');
-            if (params.range_start) q += '&range_start=' + encodeURIComponent(params.range_start);
-            if (params.range_end) q += '&range_end=' + encodeURIComponent(params.range_end);
-            return fetch(base + '/api/snapshot?' + q).then(function(r) {
-                var status = r.status;
-                return r.json().then(function(data) { return { status: status, data: data }; });
-            });
+            return Promise.reject(new Error('qt bridge unavailable'));
+        }
+
+        function getConfigViaBridgeOrHttp() {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/config').then(function(r) { return r.json(); });
+            }
+            return callQtBridge('getConfig', []).catch(function() { return fallbackHttp(); });
+        }
+
+        function updateConfigViaBridgeOrHttp(payload) {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload || {})
+                }).then(function(r) { return r.json().catch(function() { return {}; }); });
+            }
+            return callQtBridge('updateConfig', [payload || {}]).catch(function() { return fallbackHttp(); });
+        }
+
+        function setDndViaBridgeOrHttp(nextDnd) {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/dnd', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ on: !!nextDnd })
+                }).then(function(r) { return r.json(); });
+            }
+            return callQtBridge('setDnd', [!!nextDnd]).catch(function() { return fallbackHttp(); });
+        }
+
+        function getBlacklistViaBridgeOrHttp() {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/blacklist').then(function(r) { return r.json(); });
+            }
+            return callQtBridge('getBlacklist', []).catch(function() { return fallbackHttp(); });
+        }
+
+        function removeFromBlacklistViaBridgeOrHttp(appShort) {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/blacklist_remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ app_short: appShort || '' })
+                }).then(function(r) { return r.json(); });
+            }
+            return callQtBridge('removeFromBlacklist', [String(appShort || '')]).catch(function() { return fallbackHttp(); });
+        }
+
+        function getAppsListViaBridgeOrHttp() {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/apps_list').then(function(r) { return r.json(); });
+            }
+            return callQtBridge('getAppsList', []).catch(function() { return fallbackHttp(); });
+        }
+
+        function getAppDetailsViaBridgeOrHttp(query) {
+            query = query || {};
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                var url = base + '/api/app_details?app=' + encodeURIComponent(query.app || '') + '&days=' + encodeURIComponent(query.days || 7) + '&date=' + encodeURIComponent(query.date || '');
+                return fetch(url).then(function(r) { return r.json(); });
+            }
+            return callQtBridge('getAppDetails', [query]).catch(function() { return fallbackHttp(); });
+        }
+
+        function fetchSnapshot(params) {
+            params = params || {};
+
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                if (!base || base === 'null') {
+                    var loc = window.location;
+                    base = (loc.protocol || 'http:') + '//' + (loc.host || '127.0.0.1');
+                }
+                var q = 'date=' + encodeURIComponent(params.date || '') + '&range=' + encodeURIComponent(params.range || 'day');
+                if (params.range_start) q += '&range_start=' + encodeURIComponent(params.range_start);
+                if (params.range_end) q += '&range_end=' + encodeURIComponent(params.range_end);
+                return fetch(base + '/api/snapshot?' + q).then(function(r) {
+                    var status = r.status;
+                    return r.json().then(function(data) { return { status: status, data: data }; });
+                });
+            }
+
+            var qtCall = (typeof window.__EYECARE_QT_CALL__ === 'function')
+                ? window.__EYECARE_QT_CALL__('getSnapshot', [params])
+                : (window.__EYECARE_QT_CHANNEL_PROMISE__
+                    ? window.__EYECARE_QT_CHANNEL_PROMISE__.then(function() {
+                        if (typeof window.__EYECARE_QT_CALL__ === 'function') {
+                            return window.__EYECARE_QT_CALL__('getSnapshot', [params]);
+                        }
+                        throw new Error('qt bridge not ready');
+                    })
+                    : Promise.reject(new Error('qt bridge unavailable')));
+
+            return qtCall
+                .then(function(data) { return { status: 200, data: data }; })
+                .catch(function() { return fallbackHttp(); });
         }
         window.fetchSnapshot = fetchSnapshot;
 
@@ -3207,10 +3324,82 @@ onHover: function(ev, elements) {
             } catch (e) {}
         }
 
+        function ensureHoverGlowPlugin() {
+            try {
+                if (!window.Chart) return;
+                var id = 'hoverGlow';
+                try { if (Chart.registry && typeof Chart.registry.getPlugin === 'function' && Chart.registry.getPlugin(id)) return; } catch (e) {}
+                Chart.register({
+                    id: id,
+                    afterDatasetsDraw: function(chart) {
+                        var tooltip = chart.tooltip;
+                        if (!tooltip || !tooltip._active || !tooltip._active.length) return;
+                        var ctx = chart.ctx;
+                        var barIndices = [];
+                        for (var i = 0; i < tooltip._active.length; i++) {
+                            var el = tooltip._active[i].element;
+                            if (!el) continue;
+                            var oR = el.outerRadius;
+                            if (el.getProps && typeof el.getProps === 'function') {
+                                var p = el.getProps(['outerRadius'], true);
+                                if (p) oR = p.outerRadius;
+                            }
+                            if (oR != null && oR > 0) {
+                                var x = el.x, y = el.y, start = el.startAngle, end = el.endAngle, iR = el.innerRadius;
+                                if (el.getProps && typeof el.getProps === 'function') {
+                                    var p2 = el.getProps(['x', 'y', 'startAngle', 'endAngle', 'innerRadius'], true);
+                                    if (p2) { x = p2.x; y = p2.y; start = p2.startAngle; end = p2.endAngle; iR = p2.innerRadius; }
+                                }
+                                ctx.save();
+                                ctx.shadowBlur = 10;
+                                ctx.shadowColor = 'rgba(255,255,255,0.22)';
+                                ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+                                ctx.lineWidth = 2;
+                                ctx.beginPath();
+                                ctx.arc(x, y, oR, start, end);
+                                if (iR != null && iR > 0) { ctx.arc(x, y, iR, end, start, true); }
+                                ctx.closePath();
+                                ctx.stroke();
+                                ctx.restore();
+                            } else {
+                                var idx = tooltip._active[i].index;
+                                if (idx !== undefined && barIndices.indexOf(idx) === -1) barIndices.push(idx);
+                            }
+                        }
+                        for (var bi = 0; bi < barIndices.length; bi++) {
+                            var idx = barIndices[bi];
+                            var topY = Infinity, baseY = -Infinity, left = 0, width = 0;
+                            for (var d = 0; d < chart.data.datasets.length; d++) {
+                                var meta = chart.getDatasetMeta(d);
+                                if (!meta || !meta.data || !meta.data[idx]) continue;
+                                var raw = chart.data.datasets[d] && chart.data.datasets[d].data && chart.data.datasets[d].data[idx];
+                                if (raw == null || Number(raw) <= 0) continue;
+                                var seg = meta.data[idx];
+                                var sy = seg.y, sbase = seg.base;
+                                topY = Math.min(topY, sy, sbase);
+                                baseY = Math.max(baseY, sy, sbase);
+                                if (width === 0 && seg.width != null) { left = seg.x - seg.width / 2; width = seg.width; }
+                            }
+                            if (topY === Infinity || baseY === -Infinity || width <= 0) continue;
+                            var barH = Math.abs(baseY - topY);
+                            ctx.save();
+                            ctx.shadowBlur = barH < 6 ? 0 : 10;
+                            ctx.shadowColor = 'rgba(255,255,255,0.22)';
+                            ctx.strokeStyle = barH < 6 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.28)';
+                            ctx.lineWidth = barH < 6 ? 1 : 2;
+                            ctx.strokeRect(left, topY, width, barH);
+                            ctx.restore();
+                        }
+                    }
+                });
+            } catch (e) {}
+        }
+
         function applyChartGlobalDefaults() {
             try {
                 if (!window.Chart) return;
-                // 强制 hover 只命中真正被鼠标“压中”的扇区，避免整圈被判定为 active
+                ensureHoverGlowPlugin();
+                // ?? hover ???????????????????????? active
                 Chart.defaults.interaction = { mode: 'nearest', intersect: true };
                 Chart.defaults.hover = { mode: 'nearest', intersect: true };
                 Chart.defaults.elements.arc.hoverOffset = 18;

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Config routes.
 """
 import json
@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request, send_file
 from ...config.models import AppConfig
 from ...config.store import save_config
 from ...diagnostics import log_exception_summary
+from ...services import ConfigService, ServiceContext
 from ...version import APP_VERSION
 from ..common import API_VERSION
 
@@ -21,25 +22,12 @@ _icon_stat_fail_cache: dict = {}  # 模块级：仅在每 app 首次 stat 失败
 
 
 def register_config_routes(app: Flask, controller, log):
+    service = ConfigService(ServiceContext(controller=controller, log=log))
+
     @app.route("/api/config", methods=["GET"])
     def get_config():
         try:
-            cfg = controller.cfg
-            out = {
-                "reminder_work_minutes": int(getattr(cfg, "reminder_work_minutes", 20)),
-                "reminder_rest_seconds": int(getattr(cfg, "reminder_rest_seconds", 20)),
-                "reminder_rest_unit": str(getattr(cfg, "reminder_rest_unit", "sec")),
-                "idle_threshold_s": int(getattr(cfg, "idle_threshold_s", 60)),
-                "theme_name": str(getattr(cfg, "theme_name", "solid_dark")),
-                "startup_dnd": bool(getattr(cfg, "startup_dnd", False)),
-                "startup_show_main": bool(getattr(cfg, "startup_show_main", True)),
-                "startup_launch_at_login": bool(getattr(cfg, "startup_launch_at_login", False)),
-                "notify_enabled": bool(getattr(cfg, "notify_enabled", True)),
-                "notify_sound_enabled": bool(getattr(cfg, "notify_sound_enabled", True)),
-                "notify_auto_hide_seconds": int(getattr(cfg, "notify_auto_hide_seconds", 20)),
-                "rest_end_sound_enabled": bool(getattr(cfg, "rest_end_sound_enabled", True)),
-            }
-            return jsonify({"api_version": API_VERSION, "config": out})
+            return jsonify(service.get_config())
         except Exception as e:
             log.exception("get_config failed")
             return jsonify({"error": str(e), "code": "config_error"}), 500
@@ -48,41 +36,7 @@ def register_config_routes(app: Flask, controller, log):
     def post_config():
         try:
             body = request.get_json(force=True, silent=True) or {}
-            cfg = controller.cfg
-            updates = {k: v for k, v in body.items() if k in _allowed_config_keys}
-            if "reminder_work_minutes" in updates:
-                cfg.reminder_work_minutes = max(1, int(updates["reminder_work_minutes"]))
-            if "reminder_rest_seconds" in updates:
-                cfg.reminder_rest_seconds = max(1, int(updates["reminder_rest_seconds"]))
-            if "reminder_rest_unit" in updates and updates["reminder_rest_unit"] in ("sec", "min"):
-                cfg.reminder_rest_unit = updates["reminder_rest_unit"]
-            if "idle_threshold_s" in updates:
-                cfg.idle_threshold_s = max(3, min(300, int(updates["idle_threshold_s"])))
-            if "theme_name" in updates:
-                cfg.theme_name = str(updates["theme_name"])
-            if "startup_dnd" in updates:
-                cfg.startup_dnd = bool(updates["startup_dnd"])
-            if "startup_show_main" in updates:
-                cfg.startup_show_main = bool(updates["startup_show_main"])
-            if "startup_launch_at_login" in updates:
-                cfg.startup_launch_at_login = bool(updates["startup_launch_at_login"])
-                try:
-                    from ...utils.launch_at_login import set_launch_at_login
-                    set_launch_at_login(cfg.startup_launch_at_login)
-                except Exception as e:
-                    log.warning("launch_at_login apply failed: %s", e)
-            if "notify_enabled" in updates:
-                cfg.notify_enabled = bool(updates["notify_enabled"])
-            if "notify_sound_enabled" in updates:
-                cfg.notify_sound_enabled = bool(updates["notify_sound_enabled"])
-            if "notify_auto_hide_seconds" in updates:
-                v = int(updates["notify_auto_hide_seconds"])
-                cfg.notify_auto_hide_seconds = max(0, min(600, v))
-            if "rest_end_sound_enabled" in updates:
-                cfg.rest_end_sound_enabled = bool(updates["rest_end_sound_enabled"])
-            save_config(controller.cfg_path, cfg)
-            controller.on_config_updated()
-            return jsonify({"ok": True, "api_version": API_VERSION})
+            return jsonify(service.update_config(body=body))
         except Exception as e:
             log.exception("post_config failed")
             return jsonify({"error": str(e), "code": "config_error"}), 500

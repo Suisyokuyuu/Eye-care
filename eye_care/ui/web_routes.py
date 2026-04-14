@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
+from .page_delivery import render_main_html
+
 
 def build_ui_page_url(api_port: int, page: str = "main") -> str:
     p = str(page or "main").strip().lower()
@@ -28,10 +30,12 @@ def mount_ui_site_routes(
     def serve_index():
         if not index_path.exists():
             return Response("index.html not found", status=404, mimetype="text/plain")
-        raw = index_path.read_text(encoding="utf-8")
-        html = inject_bridge_script(raw)
-        if enable_drag_region_inject and callable(inject_drag_region):
-            html = inject_drag_region(html)
+        html = render_main_html(
+            index_path=index_path,
+            inject_bridge_script=inject_bridge_script,
+            inject_drag_region=inject_drag_region,
+            enable_drag_region_inject=enable_drag_region_inject,
+        )
         return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
     def _serve_subdir(subdir: str, path: str = "index.html"):

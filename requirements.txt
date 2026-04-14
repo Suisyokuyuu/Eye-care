@@ -33,3 +33,6 @@ pywin32==311
 # PyInstaller (for packaging)
 pyinstaller==6.19.0
 pyinstaller-hooks-contrib==2026.1
+
+# Qt host migration target
+PySide6==6.9.2

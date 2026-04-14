@@ -1,0 +1,24 @@
+{
+  "sample_interval_s": 1.0,
+  "idle_threshold_s": 60,
+  "reminder_work_minutes": 20,
+  "reminder_rest_seconds": 20,
+  "reminder_rest_unit": "sec",
+  "theme_name": "solid_dark",
+  "startup_dnd": false,
+  "startup_show_main": true,
+  "startup_launch_at_login": false,
+  "toast_fade_seconds": 0,
+  "notify_auto_hide_seconds": 20,
+  "rest_end_sound_enabled": true,
+  "notify_enabled": true,
+  "notify_sound_enabled": true,
+  "debug_enabled": false,
+  "app_category_overrides": {},
+  "app_display_overrides": {},
+  "app_auto_dnd_on_focus": {},
+  "blacklist_apps": [
+    "hide.exe"
+  ],
+  "sm_notify_v2": false
+}

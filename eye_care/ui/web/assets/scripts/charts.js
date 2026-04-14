@@ -226,7 +226,7 @@ window.replaceBarGradients = replaceBarGradients;
 (function registerHoverGlowPlugin() {
   if (typeof Chart === 'undefined') return;
   var id = 'hoverGlow';
-  if (Chart.registry && Chart.registry.getPlugin(id)) return;
+  try { if (Chart.registry && Chart.registry.getPlugin(id)) return; } catch (e) {}
   function roundRectPath(ctx, x, y, w, h, r) {
     if (r <= 0) { ctx.rect(x, y, w, h); return; }
     var pi = Math.PI;
