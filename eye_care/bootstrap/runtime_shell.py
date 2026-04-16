@@ -87,6 +87,7 @@ def run_pywebview_shell(data_dir: Path, no_single: bool, api_port: int, debug_co
 
     setup_logging(data_dir / "debug.log")
     log = logging.getLogger(__name__)
+    log.info("host=legacy_pywebview startup: api_port=%s debug_console=%s", api_port, debug_console)
     window_runtime = NotifyOverlayRuntime(api_port=api_port, debug_console=debug_console, logger=log)
     win_effects = WinEffects(logger=log)
 

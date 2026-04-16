@@ -348,6 +348,7 @@
                         '<div class="flex items-center"><div class="w-24 h-2 bg-dark-300 rounded-full overflow-hidden mr-2"><div class="h-full rounded-full" style="width:' + it.percent + '%;background:' + solid + '"></div></div>' +
                         '<span class="text-xs text-gray-400">' + it.percent + '%</span></div></div>';
                 }).join('') || '<p class="text-gray-500 text-sm py-4 text-center">暂无使用记录</p>';
+                hydrateAppIcons(listEl);
             }
             if (window.categoryChartInstance) {
                 var chart = window.categoryChartInstance;
@@ -702,12 +703,10 @@
                     usedAppList.push(solid);
                     var bgDim = color.replace(/,\s*[\d.]+\s*\)\s*$/, ',0.2)');
                     var borderColor = solid;
-                    var iconUrl = iconBase + '/api/icon?app=' + encodeURIComponent(it.key);
                     return '<div class="app-card flex items-center justify-between py-2 px-2 panel-inner rounded border border-white/5 cursor-pointer hover:bg-dark-300/80 transition-colors" data-app="' + escapeHtml(it.name) + '" data-app-key="' + escapeHtml(it.key) + '">' +
                         '<div class="flex items-center min-w-0">' +
                         '<div class="w-8 h-8 rounded flex items-center justify-center mr-2 flex-shrink-0 overflow-hidden" style="background:' + bgDim + '">' +
-                        '<img src="' + escapeHtml(iconUrl) + '" alt="" class="w-5 h-5 object-contain" onerror="this.style.display=\'none\';var n=this.nextElementSibling;if(n)n.style.display=\'inline\';">' +
-                        '<i class="fa fa-desktop text-sm app-card-fallback-icon" style="color:' + borderColor + ';display:none;"></i>' +
+                        buildAppIconImgHtml(it.key, borderColor) +
                         '</div>' +
                         '<div class="min-w-0">' +
                         '<span class="font-medium text-sm block truncate">' + escapeHtml(it.name) + '</span>' +
@@ -722,6 +721,7 @@
                         '</div>' +
                         '</div>';
                 }).join('') || '<p class="text-gray-500 text-sm py-4 text-center">暂无使用记录</p>';
+                hydrateAppIcons(listEl);
             }
 
             // 饼图只画用量 >0 的项，避免 0 导致 hover 时整圈异常
@@ -1413,9 +1413,14 @@
             const startRestBtn = document.getElementById('startRestBtn');
             if (!startRestBtn) return;
             function triggerRestOverlay() {
-                if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.rest_show_overlay === 'function') {
-                    try { window.pywebview.api.rest_show_overlay(); } catch (e) {}
-                }
+                desktopHostCall('showRestOverlay', [])
+                    .then(function(res) {
+                        if (res && res.ok) return;
+                        try { if (window.console && typeof window.console.info === 'function') window.console.info('rest_overlay_deferred_until_step7'); } catch (e) {}
+                    })
+                    .catch(function() {
+                        try { if (window.console && typeof window.console.info === 'function') window.console.info('rest_overlay_deferred_until_step7'); } catch (e) {}
+                    });
             }
             window.restShowOverlay = triggerRestOverlay;
             function showRestStartFail() {
@@ -1424,10 +1429,7 @@
             }
             window.ui = window.ui || {};
             window.ui.restStart = function() {
-                var base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-                if (!base || base === 'null') base = (window.location.protocol || 'http:') + '//' + (window.location.host || '');
-                fetch(base + '/api/rest/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-                    .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+                startRestViaBridgeOrHttp()
                     .then(function(res) {
                         if (res.data && res.data.ok && window.restShowOverlay) { window.restShowOverlay(); return; }
                         if (res.status === 409 && res.data && res.data.code === 'rest_locked') return;
@@ -1437,12 +1439,7 @@
             };
             startRestBtn.addEventListener('click', () => {
                 if (startRestBtn.disabled) return;
-                var base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-                if (!base || base === 'null') base = (window.location.protocol || 'http:') + '//' + (window.location.host || '');
-                fetch(base + '/api/rest/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-                    .then(function(r) {
-                        return r.json().then(function(data) { return { status: r.status, data: data }; });
-                    })
+                startRestViaBridgeOrHttp()
                     .then(function(res) {
                         if (res.data && res.data.ok) { triggerRestOverlay(); return; }
                         if (res.status === 409 && res.data && res.data.code === 'rest_locked') {
@@ -1617,7 +1614,7 @@
 
             async function doExportData() {
                 try {
-                    const r = await window.pywebview.api.export_all();
+                    const r = await desktopHostCall('exportAll', []);
                     if (!r || r.status === 'cancel') return;
                     if (r.status !== 'ok') {
                         alert('导出失败：' + (r.error || 'unknown'));
@@ -1631,7 +1628,7 @@
 
             async function doExportSettings() {
                 try {
-                    const r = await window.pywebview.api.export_settings();
+                    const r = await desktopHostCall('exportSettings', []);
                     if (!r || r.status === 'cancel') return;
                     if (r.status !== 'ok') {
                         alert('导出设置失败：' + (r.error || 'unknown'));
@@ -1645,7 +1642,7 @@
 
             async function doImportData() {
                 try {
-                    const r = await window.pywebview.api.import_all();
+                    const r = await desktopHostCall('importAll', []);
                     if (!r || r.status === 'cancel') return;
                     if (r.status !== 'ok') {
                         alert('导入失败：' + (r.error || 'unknown'));
@@ -1660,7 +1657,7 @@
 
             async function doImportSettings() {
                 try {
-                    const r = await window.pywebview.api.import_settings();
+                    const r = await desktopHostCall('importSettings', []);
                     if (!r || r.status === 'cancel') return;
                     if (r.status !== 'ok') {
                         alert('导入设置失败：' + (r.error || 'unknown'));
@@ -1743,8 +1740,7 @@
                         e.stopPropagation();
                         var name = btn.getAttribute('data-name');
                         if (!name || !(await uiConfirm('删除该分类后，该分类下的应用将归为「其他」。确定删除？'))) return;
-                        fetch(baseUrl + '/api/categories/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
-                            .then(function(r) { return r.json(); })
+                        deleteCategoryViaBridgeOrHttp(name)
                             .then(function(res) {
                                 if (res && res.error) { alert('删除失败：' + res.error); return; }
                                 var sel = document.getElementById('appCategorySelect').value;
@@ -1762,7 +1758,7 @@
             }
 
             function ensureCategoryListThenSetForm(json) {
-                fetch(baseUrl + '/api/category_names').then(function(r) { return r.json(); }).then(function(data) {
+                getCategoryNamesViaBridgeOrHttp().then(function(data) {
                     appDetailCategoryList = (data && data.categories) ? data.categories.slice() : ['其他'];
                     if (appDetailCategoryList.indexOf('其他') === -1) appDetailCategoryList.push('其他');
                     renderCategoryOptions();
@@ -1851,11 +1847,7 @@
                 var category = document.getElementById('appCategorySelect') ? document.getElementById('appCategorySelect').value : '其他';
                 var displayName = document.getElementById('appDisplayNameInput') ? document.getElementById('appDisplayNameInput').value.trim() : '';
                 var autoDnd = document.getElementById('appAutoDndCheckbox') ? document.getElementById('appAutoDndCheckbox').checked : false;
-                fetch(base + '/api/app_settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ app_short: appKey, category: category, display_name: displayName, auto_dnd_on_focus: autoDnd })
-                }).then(function(r) { return r.json();                 }).then(function(data) {
+                updateAppSettingsViaBridgeOrHttp({ app_short: appKey, category: category, display_name: displayName, auto_dnd_on_focus: autoDnd }).then(function(data) {
                     if (data && data.error) { alert('保存失败：' + data.error); return; }
                     closeModal();
                     if (typeof window.refreshLeftPanelForViewDate === 'function') window.refreshLeftPanelForViewDate();
@@ -1871,11 +1863,7 @@
                     var msg = '排除将删除该应用已有全部数据，并且未来不再记录该应用，也不会因该应用触发休息提示。此操作可在黑名单中恢复记录，但历史不会恢复。\n\n确定排除该应用吗？';
                     if (!(await uiConfirm(msg))) return;
                     var base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-                    fetch(base + '/api/app_exclude', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ app_short: appKey })
-                    }).then(function(r) { return r.json(); }).then(function(data) {
+                    excludeAppViaBridgeOrHttp(appKey).then(function(data) {
                         if (data && data.error) { alert('操作失败：' + data.error); return; }
                         closeModal();
                         if (typeof window.refreshLeftPanelForViewDate === 'function') window.refreshLeftPanelForViewDate();
@@ -2063,15 +2051,14 @@
                     usedSettings.push(solid);
                     var bgDim = color.replace(/,\s*[\d.]+\s*\)\s*$/, ',0.2)');
                     var borderColor = solid;
-                    var iconUrl = iconBase + '/api/icon?app=' + encodeURIComponent(app.app_short);
                     var name = (app.display_name || app.app_short || '').trim() || app.app_short;
                     return '<div class="app-card flex items-center justify-between py-2 px-2 panel-inner rounded border border-white/5 cursor-pointer hover:bg-dark-300/80 transition-colors" data-app-key="' + escapeHtml(app.app_short) + '" data-app-name="' + escapeHtml(name) + '">' +
                         '<div class="flex items-center min-w-0">' +
                         '<div class="w-8 h-8 rounded flex items-center justify-center mr-2 flex-shrink-0 overflow-hidden" style="background:' + bgDim + '">' +
-                        '<img src="' + escapeHtml(iconUrl) + '" alt="" class="w-5 h-5 object-contain" onerror="this.style.display=\'none\';var n=this.nextElementSibling;if(n)n.style.display=\'inline\';">' +
-                        '<i class="fa fa-desktop text-sm app-card-fallback-icon" style="color:' + borderColor + ';display:none;"></i></div>' +
+                        buildAppIconImgHtml(app.app_short, borderColor) + '</div>' +
                         '<div class="min-w-0"><span class="font-medium text-sm block truncate">' + escapeHtml(name) + '</span><span class="text-xs text-gray-400">' + escapeHtml(app.category || '') + '</span></div></div></div>';
                 }).join('');
+                hydrateAppIcons(categoryAppsList);
             }
             
             // 搜索框事件
@@ -2101,15 +2088,14 @@
                         usedSettings.push(solid);
                         var bgDim = color.replace(/,\s*[\d.]+\s*\)\s*$/, ',0.2)');
                         var borderColor = solid;
-                        var iconUrl = iconBase + '/api/icon?app=' + encodeURIComponent(app.app_short);
                         var name = (app.display_name || app.app_short || '').trim() || app.app_short;
                         return '<div class="app-card flex items-center justify-between py-2 px-2 panel-inner rounded border border-white/5 cursor-pointer hover:bg-dark-300/80 transition-colors" data-app-key="' + escapeHtml(app.app_short) + '" data-app-name="' + escapeHtml(name) + '">' +
                             '<div class="flex items-center min-w-0">' +
                             '<div class="w-8 h-8 rounded flex items-center justify-center mr-2 flex-shrink-0 overflow-hidden" style="background:' + bgDim + '">' +
-                            '<img src="' + escapeHtml(iconUrl) + '" alt="" class="w-5 h-5 object-contain" onerror="this.style.display=\'none\';var n=this.nextElementSibling;if(n)n.style.display=\'inline\';">' +
-                            '<i class="fa fa-desktop text-sm app-card-fallback-icon" style="color:' + borderColor + ';display:none;"></i></div>' +
+                            buildAppIconImgHtml(app.app_short, borderColor) + '</div>' +
                             '<div class="min-w-0"><span class="font-medium text-sm block truncate">' + escapeHtml(name) + '</span><span class="text-xs text-gray-400">' + escapeHtml(app.category || '') + '</span></div></div></div>';
                     }).join('');
+                    hydrateAppIcons(categoryAppsList);
                 });
             }
             
@@ -2585,7 +2571,7 @@ onHover: function(ev, elements) {
                 if (closeOnlyEl) closeOnlyEl.classList.remove('hidden');
                 modal.classList.remove('hidden');
                 modal.classList.add('flex');
-                fetch(base + '/api/update/check').then(function(r) { return r.json(); }).then(function(data) {
+                checkUpdateViaBridgeOrHttp().then(function(data) {
                     if (data.error || !data.ok) {
                         msgEl.textContent = '检查失败：' + (data.error || '未知错误');
                     } else if (data.has_update && data.html_url) {
@@ -2606,7 +2592,7 @@ onHover: function(ev, elements) {
             if (openUrlBtn) {
                 openUrlBtn.addEventListener('click', function() {
                     if (window.__updateCheckHtmlUrl) {
-                        fetch(base + '/api/open_url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'release_notes' }) }).catch(function() {});
+                        openUrlActionViaBridgeOrHttp('release_notes').catch(function() {});
                     }
                     hideModal();
                 });
@@ -2638,15 +2624,14 @@ onHover: function(ev, elements) {
                     usedSettings.push(solid);
                     var bgDim = color.replace(/,\s*[\d.]+\s*\)\s*$/, ',0.2)');
                     var borderColor = solid;
-                    var iconUrl = iconBase + '/api/icon?app=' + encodeURIComponent(app.app_short);
                     var name = (app.display_name || app.app_short || '').trim() || app.app_short;
                     return '<div class="app-card flex items-center justify-between py-2 px-2 panel-inner rounded border border-white/5 cursor-pointer hover:bg-dark-300/80 transition-colors" data-app-key="' + escapeHtml(app.app_short) + '" data-app-name="' + escapeHtml(name) + '">' +
                         '<div class="flex items-center min-w-0">' +
                         '<div class="w-8 h-8 rounded flex items-center justify-center mr-2 flex-shrink-0 overflow-hidden" style="background:' + bgDim + '">' +
-                        '<img src="' + escapeHtml(iconUrl) + '" alt="" class="w-5 h-5 object-contain" onerror="this.style.display=\'none\';var n=this.nextElementSibling;if(n)n.style.display=\'inline\';">' +
-                        '<i class="fa fa-desktop text-sm app-card-fallback-icon" style="color:' + borderColor + ';display:none;"></i></div>' +
+                        buildAppIconImgHtml(app.app_short, borderColor) + '</div>' +
                         '<div class="min-w-0"><span class="font-medium text-sm block truncate">' + escapeHtml(name) + '</span><span class="text-xs text-gray-400">' + escapeHtml(app.category || '') + '</span></div></div></div>';
                 }).join('');
+                hydrateAppIcons(listEl);
             }
             function openModal() {
                 modal.classList.remove('hidden');
@@ -2791,12 +2776,13 @@ onHover: function(ev, elements) {
         function initWindowControls(retried) {
             var wrap = document.getElementById('electronWindowControls');
             if (!wrap) return;
-            var api = (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
-            if (api && typeof api.minimize_window === 'function' && typeof api.close_window === 'function') {
+            var hasQt = !!(window.qtBridge && typeof window.__EYECARE_QT_CALL__ === 'function');
+            var hasLegacy = !!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.minimize_window === 'function' && typeof window.pywebview.api.close_window === 'function');
+            if (hasQt || hasLegacy) {
                 wrap.classList.remove('hidden');
-                document.getElementById('electronMinBtn') && document.getElementById('electronMinBtn').addEventListener('click', function() { try { api.minimize_window(); } catch (e) {} });
-                document.getElementById('electronMaxBtn') && document.getElementById('electronMaxBtn').addEventListener('click', function() { try { api.maximize_toggle && api.maximize_toggle(); } catch (e) {} });
-                document.getElementById('electronCloseBtn') && document.getElementById('electronCloseBtn').addEventListener('click', function() { try { api.close_window(); } catch (e) {} });
+                document.getElementById('electronMinBtn') && document.getElementById('electronMinBtn').addEventListener('click', function() { desktopHostCall('minimizeWindow', []).catch(function() {}); });
+                document.getElementById('electronMaxBtn') && document.getElementById('electronMaxBtn').addEventListener('click', function() { desktopHostCall('maximizeToggle', []).catch(function() {}); });
+                document.getElementById('electronCloseBtn') && document.getElementById('electronCloseBtn').addEventListener('click', function() { desktopHostCall('closeWindow', []).catch(function() {}); });
                 return;
             }
             if (!retried) setTimeout(function() { initWindowControls(true); }, 300);
@@ -2880,6 +2866,99 @@ onHover: function(ev, elements) {
             return Promise.reject(new Error('qt bridge unavailable'));
         }
 
+        var __APP_ICON_PLACEHOLDER__ = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+        window.__EYECARE_APP_ICON_CACHE__ = window.__EYECARE_APP_ICON_CACHE__ || {};
+        window.__eyeCareIconError = function(img) {
+            try {
+                if (!img) return;
+                img.style.display = 'none';
+                var next = img.nextElementSibling;
+                if (next) next.style.display = 'inline';
+            } catch (e) {}
+        };
+
+        function getIconUrlViaBridgeOrHttp(appShort) {
+            var key = String(appShort || '').trim();
+            if (!key) return Promise.resolve('');
+            if (window.__EYECARE_APP_ICON_CACHE__.hasOwnProperty(key)) {
+                return Promise.resolve(window.__EYECARE_APP_ICON_CACHE__[key]);
+            }
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return Promise.resolve(base + '/api/icon?app=' + encodeURIComponent(key));
+            }
+            return callQtBridge('getIconDataUrl', [key]).then(function(data) {
+                var url = (data && data.data_url) ? String(data.data_url) : '';
+                window.__EYECARE_APP_ICON_CACHE__[key] = url;
+                return url;
+            }).catch(function() {
+                return fallbackHttp().then(function(url) {
+                    window.__EYECARE_APP_ICON_CACHE__[key] = url;
+                    return url;
+                });
+            });
+        }
+
+        function buildAppIconImgHtml(appShort, borderColor) {
+            return '<img src="' + __APP_ICON_PLACEHOLDER__ + '" data-app-icon="' + escapeHtml(appShort || '') + '" alt="" class="w-5 h-5 object-contain" onerror="window.__eyeCareIconError && window.__eyeCareIconError(this);">' +
+                '<i class="fa fa-desktop text-sm app-card-fallback-icon" style="color:' + borderColor + ';display:none;"></i>';
+        }
+
+        function hydrateAppIcons(root) {
+            if (!root || !root.querySelectorAll) return;
+            var nodes = root.querySelectorAll('img[data-app-icon]');
+            nodes.forEach(function(img) {
+                if (!img || img.dataset.iconBound === '1') return;
+                img.dataset.iconBound = '1';
+                var key = img.getAttribute('data-app-icon') || '';
+                getIconUrlViaBridgeOrHttp(key).then(function(url) {
+                    if (!url) {
+                        window.__eyeCareIconError(img);
+                        return;
+                    }
+                    img.src = url;
+                }).catch(function() {
+                    window.__eyeCareIconError(img);
+                });
+            });
+        }
+
+        function getCategoryNamesViaBridgeOrHttp() {
+            return callQtBridge('getCategoryNames', []).catch(function() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/category_names').then(function(r) { return r.json(); });
+            });
+        }
+
+        function deleteCategoryViaBridgeOrHttp(name) {
+            return callQtBridge('deleteCategory', [String(name || '')]).catch(function() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/categories/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name })
+                }).then(function(r) { return r.json(); });
+            });
+        }
+
+        function checkUpdateViaBridgeOrHttp() {
+            return callQtBridge('checkUpdate', []).catch(function() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/update/check').then(function(r) { return r.json(); });
+            });
+        }
+
+        function openUrlActionViaBridgeOrHttp(action) {
+            return callQtBridge('openUrlAction', [String(action || '')]).catch(function() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/open_url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action })
+                }).then(function(r) { return r.json(); });
+            });
+        }
+
         function getConfigViaBridgeOrHttp() {
             function fallbackHttp() {
                 var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
@@ -2910,6 +2989,74 @@ onHover: function(ev, elements) {
                 }).then(function(r) { return r.json(); });
             }
             return callQtBridge('setDnd', [!!nextDnd]).catch(function() { return fallbackHttp(); });
+        }
+
+        function callLegacyPywebview(method, args) {
+            args = Array.isArray(args) ? args : [];
+            var legacyMap = {
+                closeWindow: 'close_window',
+                minimizeWindow: 'minimize_window',
+                maximizeToggle: 'maximize_toggle',
+                exportAll: 'export_all',
+                importAll: 'import_all',
+                exportSettings: 'export_settings',
+                importSettings: 'import_settings',
+                showRestOverlay: 'rest_show_overlay'
+            };
+            var legacyMethod = legacyMap[method] || method;
+            try {
+                if (window.pywebview && window.pywebview.api && typeof window.pywebview.api[legacyMethod] === 'function') {
+                    return Promise.resolve(window.pywebview.api[legacyMethod].apply(window.pywebview.api, args));
+                }
+            } catch (e) {}
+            return Promise.reject(new Error('legacy host method unavailable: ' + method));
+        }
+
+        function desktopHostCall(method, args) {
+            return callQtBridge(method, args).catch(function() { return callLegacyPywebview(method, args); });
+        }
+
+        function startRestViaBridgeOrHttp() {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
+                if (!base || base === 'null') base = (window.location.protocol || 'http:') + '//' + (window.location.host || '');
+                return fetch(base + '/api/rest/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).then(function(r) {
+                    return r.json().then(function(data) { return { status: r.status, data: data }; });
+                });
+            }
+            return callQtBridge('startRest', [])
+                .then(function(data) {
+                    var status = (data && data.code === 'rest_locked') ? 409 : 200;
+                    return { status: status, data: data || {} };
+                })
+                .catch(function() { return fallbackHttp(); });
+        }
+
+        function updateAppSettingsViaBridgeOrHttp(payload) {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/app_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload || {})
+                }).then(function(r) { return r.json(); });
+            }
+            return callQtBridge('updateAppSettings', [payload || {}]).catch(function() { return fallbackHttp(); });
+        }
+
+        function excludeAppViaBridgeOrHttp(appShort) {
+            function fallbackHttp() {
+                var base = (typeof window !== 'undefined' && window.location) ? (window.location.origin || '') : '';
+                return fetch(base + '/api/app_exclude', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ app_short: appShort || '' })
+                }).then(function(r) { return r.json(); });
+            }
+            return callQtBridge('excludeApp', [String(appShort || '')]).catch(function() { return fallbackHttp(); });
         }
 
         function getBlacklistViaBridgeOrHttp() {

@@ -153,8 +153,12 @@
       hardLog('auto_complete', {left_s: left});
       if (window.__rest_end_sound_enabled !== false) {
         try {
-          var restEndSound = new Audio((window.location.origin || '') + '/assets/rest_end_refresh_soft.wav');
-          restEndSound.play().catch(function(){});
+          if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.play_rest_end_sound === 'function') {
+            Promise.resolve(window.pywebview.api.play_rest_end_sound()).catch(function(){});
+          } else {
+            var restEndSound = new Audio((window.location.origin || '') + '/assets/rest_end_refresh_soft.wav');
+            restEndSound.play().catch(function(){});
+          }
         } catch(e) {}
       }
       callBusinessApi('/api/rest/complete');
@@ -234,13 +238,29 @@
     var params = new URLSearchParams(window.location.search || '');
     var screenIdx = parseInt(params.get('screen') || '0', 10);
     var attempts = 0;
+    var readySent = false;
+    function markReadySent() {
+      readySent = true;
+      window.__rest_ready_sent = true;
+    }
     function tryReady() {
+      if (readySent || window.__rest_ready_sent) return;
       try {
         if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.rest_ready_for_show === 'function') {
-          window.pywebview.api.rest_ready_for_show(screenIdx);
+          markReadySent();
+          var maybePromise = window.pywebview.api.rest_ready_for_show(screenIdx);
+          if (maybePromise && typeof maybePromise.then === 'function') {
+            maybePromise.catch(function(){
+              readySent = false;
+              window.__rest_ready_sent = false;
+            });
+          }
           return;
         }
-      } catch(e) {}
+      } catch(e) {
+        readySent = false;
+        window.__rest_ready_sent = false;
+      }
       attempts++;
       if (attempts < 20) setTimeout(tryReady, 100);
     }
