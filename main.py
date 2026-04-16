@@ -22,7 +22,7 @@ def parse_args():
     ap.add_argument("--no-single", action="store_true", help="Disable single-instance guard")
     ap.add_argument("--debug", action="store_true", help="Enable debug console and extra diagnostics")
     ap.add_argument("--api-port", type=int, default=None, metavar="PORT", help="Explicit local API port")
-    ap.add_argument("--host", choices=("legacy", "qt"), default=os.environ.get("EYECARE_HOST", "legacy"), help="Desktop host to use")
+    ap.add_argument("--host", choices=("legacy", "qt"), default=os.environ.get("EYECARE_HOST", "qt"), help="Desktop host to use")
     return ap.parse_args()
 
 

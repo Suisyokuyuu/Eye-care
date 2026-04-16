@@ -353,9 +353,28 @@ def register_config_routes(app: Flask, controller, log):
                 "error": "",
             })
         except urllib.error.HTTPError as e:
+            if e.code == 404:
+                release_page = "https://github.com/Suisyokuyuu/Eye-care/releases"
+                _update_check_cache.update({
+                    "_ts": now,
+                    "current": APP_VERSION,
+                    "latest": "",
+                    "has_update": False,
+                    "html_url": release_page,
+                    "asset_url": "",
+                })
+                return jsonify({
+                    "ok": True,
+                    "current": APP_VERSION,
+                    "latest": "",
+                    "has_update": False,
+                    "html_url": release_page,
+                    "asset_url": "",
+                    "error": "",
+                })
             err = str(e)
             if e.code == 403:
-                err = "请求过于频繁，请稍后再试"
+                err = "????????????"
             _update_check_cache["_ts"] = 0
             return jsonify({
                 "ok": False,
