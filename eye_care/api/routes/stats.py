@@ -57,7 +57,7 @@ def register_stats_routes(app: Flask, controller, log):
     service = StatsService(ServiceContext(controller=controller, log=log))
     @app.route("/api/app_details", methods=["GET"])
     def app_details():
-        """M1?app_short ???date ??=???days ?? 7?hourly/segments ??? date?"""
+        """M1：app_short 入参；date 缺省=今天；days 默认 7。hourly/segments 仅单日 date。"""
         try:
             app_key = (request.args.get("app") or "").strip().lower()
             date_arg = (request.args.get("date") or "").strip()
@@ -88,7 +88,7 @@ def register_stats_routes(app: Flask, controller, log):
 
     @app.route("/api/apps_list", methods=["GET"])
     def apps_list():
-        """????????app_short, display_name, category????????????"""
+        """已记录应用列表：app_short, display_name, category（用于应用设置页卡片）。"""
         try:
             return jsonify(service.get_apps_list())
         except Exception as e:
@@ -97,7 +97,7 @@ def register_stats_routes(app: Flask, controller, log):
 
     @app.route("/api/app_settings", methods=["POST"])
     def app_settings():
-        """??????category / display_name / auto_dnd_on_focus??"??/??"????"""
+        """保存单应用：category / display_name / auto_dnd_on_focus。点"应用/保存"时调用。"""
         try:
             result = service.update_app_settings(body=request.get_json() or {})
             _invalidate_app_details_cache(app_key=result.get("app_short"))
@@ -110,7 +110,7 @@ def register_stats_routes(app: Flask, controller, log):
 
     @app.route("/api/app_exclude", methods=["POST"])
     def app_exclude():
-        """????????????? + ???????"""
+        """排除该应用计时：加入黑名单 + 删除历史数据。"""
         try:
             service.exclude_app(app_short=(request.get_json() or {}).get("app_short"))
             return jsonify({"ok": True, "api_version": API_VERSION})
@@ -122,7 +122,7 @@ def register_stats_routes(app: Flask, controller, log):
 
     @app.route("/api/blacklist", methods=["GET"])
     def blacklist_get():
-        """??????app_short, display_name?"""
+        """黑名单列表：app_short, display_name。"""
         try:
             return jsonify(service.get_blacklist())
         except Exception as e:
@@ -131,7 +131,7 @@ def register_stats_routes(app: Flask, controller, log):
 
     @app.route("/api/blacklist_remove", methods=["POST"])
     def blacklist_remove():
-        """??????? app????????"""
+        """从黑名单移除某 app，恢复未来记录。"""
         try:
             service.remove_from_blacklist(app_short=(request.get_json() or {}).get("app_short"))
             return jsonify({"ok": True, "api_version": API_VERSION})
@@ -148,5 +148,5 @@ def register_stats_routes(app: Flask, controller, log):
             month = int(request.args.get("month"))  # 1..12
             return jsonify(service.get_calendar_month(year=year, month=month))
         except Exception as e:
-            log_exception_summary(log, "DIAG_EXCEPTION", "calendar_month??", "??????????", str(e))
+            log_exception_summary(log, "DIAG_EXCEPTION", "calendar_month接口", "前端日历置灰可能异常", str(e))
             return jsonify({"error": str(e)}), 500

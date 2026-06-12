@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions
+cd /d "%~dp0"
+
 set "ROOT=%~dp0"
-cd /d "%ROOT%"
 
 echo Cleaning __pycache__ (skip user_data\ venv\ .venv) ...
 

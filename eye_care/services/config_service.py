@@ -242,7 +242,7 @@ class ConfigService:
             if value and str(value).strip():
                 names.add(str(value).strip())
         names.discard("")
-        names.add("??")
+        names.add("其他")
         return {"api_version": API_VERSION, "categories": sorted(names)}
 
     def delete_category(self, *, name: str) -> dict:
@@ -255,17 +255,17 @@ class ConfigService:
         if not get_cats:
             raise ServiceError("not supported", code="categories_error", http_status=501)
         mapping = get_cats()
-        changed = {k: "??" for k, value in mapping.items() if value == name}
+        changed = {k: "其他" for k, value in mapping.items() if value == name}
         if changed:
             new_mapping = dict(mapping)
             for key in changed:
-                new_mapping[key] = "??"
+                new_mapping[key] = "其他"
             getattr(repo, "save_app_categories", lambda x: None)(new_mapping)
         overrides = dict(getattr(cfg, "app_category_overrides", None) or {})
         override_changed = False
         for key, value in list(overrides.items()):
             if value == name:
-                overrides[key] = "??"
+                overrides[key] = "其他"
                 override_changed = True
         if override_changed:
             cfg.app_category_overrides = overrides
@@ -348,7 +348,7 @@ class ConfigService:
                 }
             err = str(exc)
             if exc.code == 403:
-                err = "????????????"
+                err = "请求过于频繁，请稍后再试"
             _update_check_cache["_ts"] = 0
             return {
                 "ok": False,
@@ -379,6 +379,6 @@ class ConfigService:
             "help": "https://github.com/Suisyokuyuu/Eye-care",
         }
         if not action or action not in actions:
-            raise ServiceError("?????? action: release_notes, help", code="bad_request", http_status=400)
+            raise ServiceError("不支持的操作 action: release_notes, help", code="bad_request", http_status=400)
         webbrowser.open(actions[action])
         return {"ok": True}

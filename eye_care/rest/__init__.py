@@ -1,4 +1,1 @@
-"""休息遮罩/休息页子系统。"""
-from .rest_window_controller import RestWindowController
-
-__all__ = ["RestWindowController"]
+"""休息遮罩/休息页子系统（Qt host 自行管理，此包仅作命名空间保留）。"""

@@ -30,6 +30,26 @@ class _FlaskStartupFilter:
         return getattr(self._stream, name)
 
 
+def _find_available_port(preferred: int, max_attempts: int = 10) -> int:
+    """Try preferred port, then preferred+1..preferred+N. Returns the first available port."""
+    import socket
+
+    for offset in range(max_attempts):
+        port = preferred + offset
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                return port
+            except OSError:
+                continue
+    # Last resort: let OS pick one
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
 def start_backend_services(
     *,
     data_dir: Path,

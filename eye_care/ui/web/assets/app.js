@@ -39,7 +39,7 @@
             };
         })();
 
-        tailwind.config = {
+        window.__eyeCareStaticTailwindConfig = {
             theme: {
                 extend: {
                     colors: {
@@ -703,21 +703,23 @@
                     usedAppList.push(solid);
                     var bgDim = color.replace(/,\s*[\d.]+\s*\)\s*$/, ',0.2)');
                     var borderColor = solid;
-                    return '<div class="app-card flex items-center justify-between py-2 px-2 panel-inner rounded border border-white/5 cursor-pointer hover:bg-dark-300/80 transition-colors" data-app="' + escapeHtml(it.name) + '" data-app-key="' + escapeHtml(it.key) + '">' +
-                        '<div class="flex items-center min-w-0">' +
-                        '<div class="w-8 h-8 rounded flex items-center justify-center mr-2 flex-shrink-0 overflow-hidden" style="background:' + bgDim + '">' +
+                    return '<div class="app-card app-list-card panel-inner rounded border border-white/5 cursor-pointer hover:bg-dark-300/80 transition-colors" data-app="' + escapeHtml(it.name) + '" data-app-key="' + escapeHtml(it.key) + '">' +
+                        '<div class="app-list-row">' +
+                        '<div class="app-list-name-cell">' +
+                        '<div class="app-list-icon" style="background:' + bgDim + '">' +
                         buildAppIconImgHtml(it.key, borderColor) +
                         '</div>' +
-                        '<div class="min-w-0">' +
-                        '<span class="font-medium text-sm block truncate">' + escapeHtml(it.name) + '</span>' +
-                        '<span class="text-xs text-gray-400">' + it.duration + '</span>' +
+                        '<div class="app-list-copy">' +
+                        '<span class="app-list-name">' + escapeHtml(it.name) + '</span>' +
+                        '<span class="app-list-duration-text">' + it.duration + '</span>' +
                         '</div>' +
                         '</div>' +
-                        '<div class="flex items-center flex-shrink-0 ml-2">' +
-                        '<div class="w-16 h-1.5 bg-dark-300 rounded-full overflow-hidden mr-1.5">' +
-                        '<div class="h-full rounded-full" style="width:' + it.percent + '%;background:' + borderColor + '"></div>' +
+                        '<div class="app-list-meter">' +
+                        '<div class="app-list-meter-track">' +
+                        '<div class="app-list-meter-fill" style="width:' + it.percent + '%;background:' + borderColor + '"></div>' +
                         '</div>' +
-                        '<span class="text-xs text-gray-400 w-7">' + Math.round(it.percent) + '%</span>' +
+                        '</div>' +
+                        '<span class="app-list-percent">' + Math.round(it.percent) + '%</span>' +
                         '</div>' +
                         '</div>';
                 }).join('') || '<p class="text-gray-500 text-sm py-4 text-center">暂无使用记录</p>';
@@ -753,6 +755,13 @@
                 return;
             }
             var chart = window.appChartInstance;
+            // Compute data hash to skip unnecessary redraws (fixes 120Hz flicker)
+            var dataHash = labels.join(',') + '|' + data.join(',');
+            if (chart.__dataHash === dataHash) {
+                // Data unchanged — skip chart.update entirely
+                return;
+            }
+            chart.__dataHash = dataHash;
             chart.data.labels = labels;
             chart.data.datasets[0].data = data;
             chart.data.datasets[0].backgroundColor = bg;
@@ -2442,6 +2451,7 @@ onHover: function(ev, elements) {
             const notifyDurationInput = document.getElementById('settingsNotifyDuration');
             const notifySoundCheckbox = document.getElementById('settingsNotifySound');
             const restEndSoundCheckbox = document.getElementById('settingsRestEndSound');
+            const closeActionSelect = document.getElementById('settingsCloseAction');
             const base = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
             if (!btn || !modal) return;
             function updateRestSettingsVisibility() {
@@ -2480,6 +2490,7 @@ onHover: function(ev, elements) {
                         if (notifyDurationInput) notifyDurationInput.value = String(c.notify_auto_hide_seconds ?? 20);
                         if (notifySoundCheckbox) notifySoundCheckbox.checked = c.notify_sound_enabled !== false;
                         if (restEndSoundCheckbox) restEndSoundCheckbox.checked = c.rest_end_sound_enabled !== false;
+                        if (closeActionSelect) closeActionSelect.value = c.close_action || 'ask';
                     }
                 }).catch(function() {});
             }
@@ -2513,7 +2524,8 @@ onHover: function(ev, elements) {
                     reminder_rest_seconds: restSec,
                     reminder_rest_unit: unit,
                     notify_sound_enabled: notifySoundCheckbox ? notifySoundCheckbox.checked : true,
-                    rest_end_sound_enabled: restEndSoundCheckbox ? restEndSoundCheckbox.checked : true
+                    rest_end_sound_enabled: restEndSoundCheckbox ? restEndSoundCheckbox.checked : true,
+                    close_action: closeActionSelect ? closeActionSelect.value : 'ask'
                 };
                 if (notifyDurationInput) {
                     var v = parseInt(notifyDurationInput.value, 10);
@@ -2773,19 +2785,38 @@ onHover: function(ev, elements) {
         }
 
         // 标题栏窗口控制（pywebview 无边框时显示并绑定 minimize/maximize/close）
-        function initWindowControls(retried) {
+        function initWindowControls(retryCount) {
             var wrap = document.getElementById('electronWindowControls');
             if (!wrap) return;
+            if (!wrap.dataset.bound) {
+                wrap.dataset.bound = '1';
+                var minBtn = document.getElementById('electronMinBtn');
+                var maxBtn = document.getElementById('electronMaxBtn');
+                var closeBtn = document.getElementById('electronCloseBtn');
+                if (minBtn) minBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    desktopHostCall('minimizeWindow', []).catch(function() {});
+                });
+                if (maxBtn) maxBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    desktopHostCall('maximizeToggle', []).catch(function() {});
+                });
+                if (closeBtn) closeBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    desktopHostCall('closeWindow', []).catch(function() {});
+                });
+            }
             var hasQt = !!(window.qtBridge && typeof window.__EYECARE_QT_CALL__ === 'function');
             var hasLegacy = !!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.minimize_window === 'function' && typeof window.pywebview.api.close_window === 'function');
             if (hasQt || hasLegacy) {
                 wrap.classList.remove('hidden');
-                document.getElementById('electronMinBtn') && document.getElementById('electronMinBtn').addEventListener('click', function() { desktopHostCall('minimizeWindow', []).catch(function() {}); });
-                document.getElementById('electronMaxBtn') && document.getElementById('electronMaxBtn').addEventListener('click', function() { desktopHostCall('maximizeToggle', []).catch(function() {}); });
-                document.getElementById('electronCloseBtn') && document.getElementById('electronCloseBtn').addEventListener('click', function() { desktopHostCall('closeWindow', []).catch(function() {}); });
                 return;
             }
-            if (!retried) setTimeout(function() { initWindowControls(true); }, 300);
+            retryCount = retryCount || 0;
+            if (retryCount < 40) setTimeout(function() { initWindowControls(retryCount + 1); }, 250);
         }
 
         // 秒 -> "X小时Y分钟"
@@ -3132,7 +3163,7 @@ onHover: function(ev, elements) {
         }
         window.fetchSnapshot = fetchSnapshot;
 
-        var SNAPSHOT_POLL_MS = 10000;
+        var SNAPSHOT_POLL_MS = 15000;
         var __pollTimer = null;
         var __pollStarted = false;
         var __pollTickSeq = 0;
@@ -3546,7 +3577,7 @@ onHover: function(ev, elements) {
             try {
                 if (!window.Chart) return;
                 ensureHoverGlowPlugin();
-                // ?? hover ???????????????????????? active
+                // 强制 hover 只命中真正被鼠标"压中"的扇区，避免整圈被判定为 active
                 Chart.defaults.interaction = { mode: 'nearest', intersect: true };
                 Chart.defaults.hover = { mode: 'nearest', intersect: true };
                 Chart.defaults.elements.arc.hoverOffset = 18;

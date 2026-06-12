@@ -1,9 +1,16 @@
 @echo off
 setlocal
-
 cd /d "%~dp0"
 
-where python >nul 2>nul
+:: 优先使用项目虚拟环境，否则使用系统 Python（D:\Python）
+if exist "venv\Scripts\python.exe" (
+    set "PY=venv\Scripts\python.exe"
+) else (
+    set "PY=D:\Python\python.exe"
+)
+
+:: 检查 Python 可用性
+"%PY%" --version >nul 2>nul
 if errorlevel 1 (
     echo Python not found. Install Python and add to PATH.
     pause
@@ -11,7 +18,7 @@ if errorlevel 1 (
 )
 
 echo Installing dependencies...
-python -m pip install -r requirements.txt
+"%PY%" -m pip install -r requirements.txt
 if errorlevel 1 (
     echo pip install failed.
     pause
@@ -19,10 +26,10 @@ if errorlevel 1 (
 )
 
 echo Checking PyInstaller...
-python -m PyInstaller --version >nul 2>nul
+"%PY%" -m PyInstaller --version >nul 2>nul
 if errorlevel 1 (
     echo Installing PyInstaller...
-    python -m pip install pyinstaller
+    "%PY%" -m pip install pyinstaller
     if errorlevel 1 (
         echo PyInstaller install failed.
         pause
@@ -35,7 +42,7 @@ if not exist "version_info.txt" (echo version_info.txt not found. & pause & exit
 if not exist "icon.ico" (echo icon.ico not found. & pause & exit /b 1)
 
 echo Building with spec file...
-python -m PyInstaller "EyE Care.spec" --noconfirm --clean
+"%PY%" -m PyInstaller "EyE Care.spec" --noconfirm --clean
 
 if errorlevel 1 (
     echo Build failed.
@@ -56,14 +63,11 @@ if exist "%INTERNAL%\icon.png" copy /y "%INTERNAL%\icon.png" "%DISTDIR%\"
 REM Copy config files to outer level
 if exist "%INTERNAL%\requirements.txt" copy /y "%INTERNAL%\requirements.txt" "%DISTDIR%\"
 if exist "%INTERNAL%\README.md" copy /y "%INTERNAL%\README.md" "%DISTDIR%\"
-REM Note: .gitignore and .cursorindexingignore are NOT copied (development files only)
 
 REM Create user_data directory (user data directory)
 if not exist "%DISTDIR%\user_data" mkdir "%DISTDIR%\user_data"
 
 REM Copy packaging helper scripts to output directory (exclude run_debug.bat from final package)
-REM NOTE: run_debug.bat is only for development and should not be shipped in dist\EyE Care
-REM if exist "%~dp0run_debug.bat" copy /y "%~dp0run_debug.bat" "%DISTDIR%\"
 if exist "%~dp0install_deps.bat" copy /y "%~dp0install_deps.bat" "%DISTDIR%\"
 
 echo.

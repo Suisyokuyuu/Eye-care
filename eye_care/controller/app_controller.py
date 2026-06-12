@@ -481,9 +481,25 @@ class AppController:
         self._compensate_auto_idle_on_exit_rest()
 
     def notify_rest_entered(self) -> None:
-        """Rest 已进入（rest_start 成功后调用），守卫锁住「立即休息」。"""
+        """Rest 已进入（rest_start 成功后调用），守卫锁住「立即休息」。
+        
+        按下按钮后立即锁定，等待 2 秒后自动释放（防连点）。
+        不等遮罩关闭——遮罩关闭时也会调 notify_rest_closed 做安全兜底。
+        """
         with self._lock:
             self._rest_entry_guard.record_rest_entered()
+        # 2 秒后自动解锁（即使遮罩没关）
+        cooldown_end_at = time.time() + REST_ENTRY_GUARD_COOLDOWN_S
+        with self._lock:
+            if self._rest_entry_guard.state != RestEntryGuardState.LOCKED_ACTIVE:
+                return
+            self._rest_entry_guard._cooldown_end_at = cooldown_end_at
+        timer = threading.Timer(
+            REST_ENTRY_GUARD_COOLDOWN_S,
+            self._on_rest_guard_cooldown_expire,
+        )
+        timer.daemon = True
+        timer.start()
 
     def notify_rest_closed(self) -> None:
         """Rest 遮罩已关闭（CLOSED），进入 2 秒冷却；冷却从本调用时刻起算。幂等：仅 LOCKED_ACTIVE 时执行。"""
@@ -511,10 +527,21 @@ class AppController:
                 self._rest_guard_cooldown_timer.start()
 
     def _on_rest_guard_cooldown_expire(self) -> None:
-        """2 秒冷却到期，解锁「立即休息」。"""
+        """2 秒冷却到期，解锁「立即休息」。
+        
+        处理两种状态：
+        - LOCKED_ACTIVE：notify_rest_entered 自动解锁路径 → 直接解锁
+        - LOCKED_COOLDOWN：notify_rest_closed 正常冷却路径 → record_cooldown_expire
+        """
         with self._lock:
             self._rest_guard_cooldown_timer = None
-            self._rest_entry_guard.record_cooldown_expire()
+            if self._rest_entry_guard.state == RestEntryGuardState.LOCKED_ACTIVE:
+                # 直接解锁（不走 LOCKED_COOLDOWN）
+                self._rest_entry_guard.record(
+                    RestEntryGuardState.UNLOCKED, "COOLDOWN_EXPIRE",
+                )
+            else:
+                self._rest_entry_guard.record_cooldown_expire()
 
     def get_rest_start_guard_status(self) -> dict:
         """返回 rest 进入守卫状态，供 snapshot 与 /api/rest/start 共用。键：start_enabled, start_unlock_in_ms, start_block_reason。"""

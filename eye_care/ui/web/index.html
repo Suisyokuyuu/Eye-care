@@ -2,12 +2,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EyE Care - 护眼应用</title>
+    <!-- 内联深色背景兜底：CSS/字体加载前先确保不闪白 -->
+    <style>html,body{background:#070D19 !important;margin:0;padding:0;}body{min-height:100vh;}
+/* 弹窗默认全隐藏（!important 防止 Tailwind 级联覆盖） */
+#closeWindowModal{display:none !important;}
+/* GPU合成加速，避免刷新时闪烁 */
+.panel-gradient-left,.panel-gradient,.dashboard-panel{transform:translateZ(0);backface-visibility:hidden;}
+/* 图表canvas防闪烁 */
+canvas{image-rendering:auto;will-change:transform;backface-visibility:hidden;}
+/* 面板内容变更不触发全量重排 */
+.panel-inner,.dashboard-cards{content-visibility:auto;contain:layout style;}</style>
     <!-- API 鉴权：必须最先加载 -->
     <script src="/assets/auth_bootstrap.js"></script>
     <!-- Tailwind CSS v3 (本地资源，完全离线) -->
-    <script src="/assets/libs/tailwind.js"></script>
+    <link rel="stylesheet" href="/assets/styles/tailwind.css">
     <!-- Tailwind 配置 -->
-    <script src="/assets/scripts/tailwind.config.js"></script>
     <!-- Font Awesome (本地资源) -->
     <link href="/assets/libs/font-awesome.min.css" rel="stylesheet">
     <!-- Chart.js (本地资源) -->
@@ -90,12 +99,12 @@
                         </div>
                     </div>
                     
-                    <div class="flex items-center justify-between border-b border-white/10 mb-3 flex-shrink-0">
+                    <div class="tab-switch-row flex items-center justify-between border-b border-white/10 mb-3 flex-shrink-0">
                         <div class="view-tabs flex rounded-xl p-0.5">
                             <button id="appTab" class="tab-active px-4 py-2 text-sm font-medium rounded-[10px]">应用</button>
                             <button id="categoryTab" class="tab-inactive px-4 py-2 text-sm font-medium rounded-[10px]">分类</button>
                         </div>
-                        <div class="inline-flex rounded-md shadow-sm" role="group">
+                        <div class="period-tabs inline-flex rounded-md shadow-sm" role="group">
                             <button id="dayTab" class="tab-active px-3 py-1.5 text-xs font-medium rounded-l-lg border border-white/10">日</button>
                             <button id="weekTab" class="tab-inactive px-3 py-1.5 text-xs font-medium border-t border-b border-white/10">周</button>
                             <button id="monthTab" class="tab-inactive px-3 py-1.5 text-xs font-medium rounded-r-lg border border-white/10">月</button>
@@ -237,6 +246,19 @@
                     </label>
                 </div>
                 <hr class="border-white/10">
+                <!-- 关闭行为设置 -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-300">关闭主窗口时的行为</label>
+                    <p class="text-xs text-gray-400">选择点击关闭按钮后的默认操作。</p>
+                    <div class="flex items-center gap-2">
+                        <select id="settingsCloseAction" class="input-primary text-sm py-2 pl-2 pr-8 min-w-[8rem] rounded-lg border border-white/10 bg-dark-300 text-gray-200">
+                            <option value="ask">每次询问</option>
+                            <option value="minimize">最小化到托盘</option>
+                            <option value="quit">退出程序</option>
+                        </select>
+                    </div>
+                </div>
+                <hr class="border-white/10">
                 <!-- 启用休息提醒功能开关 -->
                 <div class="space-y-2">
                     <label class="flex items-center gap-3 cursor-pointer">
@@ -354,6 +376,26 @@
             <div class="flex gap-3 px-6 pb-6">
                 <button id="importExportChoiceBtn1" class="btn-primary flex-1 py-2">按钮1</button>
                 <button id="importExportChoiceBtn2" class="btn-secondary flex-1 py-2">按钮2</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 关闭主窗口弹窗（仿导入导出样式） -->
+    <div id="closeWindowModal" class="fixed inset-0 z-[55] hidden items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="close-window-dialog bg-dark-200 rounded-xl w-full max-w-sm mx-4 shadow-xl overflow-hidden">
+            <div class="close-window-header flex justify-between items-center px-6 pt-4 pb-2">
+                <h3 class="text-lg font-semibold text-white" id="closeWindowTitle">关闭主窗口</h3>
+                <button type="button" id="closeWindowClose" class="text-gray-400 hover:text-white p-1 rounded" title="关闭"><i class="fa fa-times text-xl"></i></button>
+            </div>
+            <div class="close-window-body px-6 pb-6">
+                <label class="flex items-center gap-2 mt-4 cursor-pointer">
+                    <input type="checkbox" id="closeWindowRemember" class="rounded border-white/20 bg-dark-300 text-primary">
+                    <span class="text-sm text-gray-400">记住选择，不再询问</span>
+                </label>
+            </div>
+            <div class="close-window-actions flex gap-3 px-6 pb-6">
+                <button id="closeWindowMinimize" class="btn-secondary flex-1 py-2">最小化到托盘</button>
+                <button id="closeWindowQuit" class="btn-primary flex-1 py-2">退出程序</button>
             </div>
         </div>
     </div>

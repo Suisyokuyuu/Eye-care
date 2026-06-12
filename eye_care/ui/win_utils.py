@@ -1,4 +1,4 @@
-"""Windows 相关小工具，供 style_coordinator、notify 等复用，避免循环依赖。"""
+"""Windows 相关小工具，供 Qt runtime_shell、notify 等复用，避免循环依赖。"""
 from __future__ import annotations
 
 from typing import Any, Optional
