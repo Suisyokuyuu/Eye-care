@@ -18,7 +18,7 @@ body{
 .rest-root{
   position:fixed; inset:0;
   opacity: 0;
-  transition: opacity 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: auto;  /* 必须接收点击，由 JS 拦截非「稍后」的点击，否则会穿透到后面窗口 */
 }
 .rest-root.rest-visible{ opacity: 1; }

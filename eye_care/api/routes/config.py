@@ -374,7 +374,7 @@ def register_config_routes(app: Flask, controller, log):
                 })
             err = str(e)
             if e.code == 403:
-                err = "????????????"
+                err = "请求过于频繁，请稍后再试"
             _update_check_cache["_ts"] = 0
             return jsonify({
                 "ok": False,

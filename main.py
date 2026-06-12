@@ -22,7 +22,7 @@ def parse_args():
     ap.add_argument("--no-single", action="store_true", help="Disable single-instance guard")
     ap.add_argument("--debug", action="store_true", help="Enable debug console and extra diagnostics")
     ap.add_argument("--api-port", type=int, default=None, metavar="PORT", help="Explicit local API port")
-    ap.add_argument("--host", choices=("legacy", "qt"), default=os.environ.get("EYECARE_HOST", "qt"), help="Desktop host to use")
+    ap.add_argument("--host", choices=("qt",), default=os.environ.get("EYECARE_HOST", "qt"), help="Desktop host to use (Qt only)")
     return ap.parse_args()
 
 
@@ -79,14 +79,9 @@ def main():
 
     port = int(os.environ.get("EYECARE_API_PORT", str(DEFAULT_API_PORT)))
     try:
-        if args.host == "qt":
-            from eye_care.qt import run_qt_shell
+        from eye_care.qt import run_qt_shell
 
-            run_qt_shell(data_dir=data_dir, no_single=args.no_single, api_port=port, debug_console=args.debug)
-        else:
-            from eye_care.bootstrap.runtime_shell import run_pywebview_shell
-
-            run_pywebview_shell(data_dir=data_dir, no_single=args.no_single, api_port=port, debug_console=args.debug)
+        run_qt_shell(data_dir=data_dir, no_single=args.no_single, api_port=port, debug_console=args.debug)
     except Exception as exc:
         try:
             import ctypes
@@ -95,7 +90,7 @@ def main():
             user32 = ctypes.WinDLL("user32", use_last_error=True)
             user32.MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
             user32.MessageBoxW.restype = wintypes.INT
-            user32.MessageBoxW(None, f"?????{exc}", "EyE Care", 0x00000010 | 0x00040000)
+            user32.MessageBoxW(None, f"启动失败：{exc}", "EyE Care", 0x00000010 | 0x00040000)
         except Exception as fallback_exc:
             log_exception_summary(
                 logging.getLogger(__name__),

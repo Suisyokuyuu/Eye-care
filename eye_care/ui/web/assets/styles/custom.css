@@ -1,6 +1,30 @@
 /* 自定义组件样式 */
 
 /* 按钮样式 */
+button {
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    margin: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: 0;
+    color: inherit;
+}
+
+button:disabled {
+    cursor: not-allowed;
+}
+
+button:focus {
+    outline: none;
+}
+
+button:focus-visible {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.38);
+}
+
 .btn-primary {
     background-color: #3B82F6;
     color: white;
@@ -19,6 +43,19 @@
 .btn-primary:focus {
     outline: none;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+}
+.btn-primary:disabled,
+.btn-primary[disabled] {
+    background-color: #374151;
+    color: #9CA3AF;
+    cursor: not-allowed;
+    box-shadow: none;
+    opacity: 0.6;
+}
+.btn-primary:disabled:hover,
+.btn-primary[disabled]:hover {
+    background-color: #374151;
+    box-shadow: none;
 }
 
 .btn-secondary {
@@ -105,21 +142,41 @@ input[type="number"] {
 
 /* 标签页样式（日/周/月等通用） */
 .tab-active {
+    background: rgba(59, 130, 246, 0.12);
+    border-color: rgba(59, 130, 246, 0.45) !important;
     border-bottom: 2px solid #3B82F6;
     color: #3B82F6;
 }
 .tab-inactive {
+    background: rgba(15, 23, 42, 0.35);
     color: #9CA3AF;
     transition: color 300ms;
 }
 .tab-inactive:hover {
+    background: rgba(255, 255, 255, 0.06);
     color: white;
 }
 
 /* 左侧「应用/分类」tabs：选中有底色+轻量下划线，未选中弱化 */
+.tab-switch-row {
+    position: relative;
+}
+
+.tab-switch-row::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    pointer-events: none;
+}
+
 .view-tabs .tab-active {
     background: rgba(59, 130, 246, 0.12);
     color: #fff;
+    border: 1px solid transparent !important;
     border-bottom: none;
     border-radius: 10px;
     box-shadow: inset 0 2px 0 0 rgba(59, 130, 246, 0.5);
@@ -128,6 +185,7 @@ input[type="number"] {
 .view-tabs .tab-inactive {
     color: rgba(255, 255, 255, 0.7);
     background: transparent;
+    border: 1px solid transparent !important;
     border-bottom: none;
     transition: color 0.2s, background 0.2s;
 }
@@ -137,6 +195,54 @@ input[type="number"] {
 }
 
 /* 滚动条样式 */
+.inline-flex[role="group"] {
+    background: rgba(15, 23, 42, 0.35);
+    border: 1px solid rgba(255,255,255,0.08);
+    overflow: hidden;
+}
+.inline-flex[role="group"] .tab-active {
+    background: rgba(59, 130, 246, 0.16);
+    color: #60A5FA;
+    border-color: rgba(59, 130, 246, 0.45) !important;
+    border-bottom: 1px solid rgba(59, 130, 246, 0.45);
+    box-shadow: inset 0 -2px 0 rgba(59,130,246,0.85);
+}
+.inline-flex[role="group"] .tab-inactive {
+    background: transparent;
+    color: rgba(255,255,255,0.58);
+    border-color: rgba(255,255,255,0.08) !important;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.inline-flex[role="group"] .tab-inactive:hover {
+    background: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.82);
+}
+
+.period-tabs {
+    min-height: 2.375rem;
+    border-radius: 0.625rem;
+    background: rgba(15, 23, 42, 0.45);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+.period-tabs button {
+    min-width: 3rem;
+    min-height: 2.25rem;
+    padding: 0.45rem 0.875rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+}
+
+.period-tabs .tab-active {
+    background: rgba(59, 130, 246, 0.18);
+    color: #60A5FA;
+    box-shadow: inset 0 -2px 0 rgba(59, 130, 246, 0.95), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.period-tabs .tab-inactive {
+    color: rgba(255, 255, 255, 0.62);
+}
+
 .scrollbar-thin::-webkit-scrollbar { width: 6px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
@@ -166,7 +272,7 @@ input[type="number"] {
     -webkit-app-region: drag;
     user-select: none;
     -webkit-user-select: none;
-    cursor: move;
+    cursor: default;
     
     /* GPU加速 - 强制硬件加速 */
     transform: translate3d(0, 0, 0);
@@ -193,20 +299,119 @@ input[type="number"] {
 
 .titlebar-btn { 
     width: 46px; 
-    height: 32px; 
+    height: 36px; 
     display: inline-flex; 
     align-items: center; 
     justify-content: center; 
-    color: #ccc;
+    color: rgba(255,255,255,0.72);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
     transition: background-color 100ms, color 100ms;
 }
 .titlebar-btn:hover { 
-    background: rgba(255,255,255,0.08); 
+    background: rgba(255,255,255,0.10); 
     color: #fff; 
 }
 .titlebar-btn-close:hover { 
     background: #e81123; 
     color: #fff; 
+}
+
+#closeSettingsModal,
+#closeUpdateCheckModal,
+#closeAppSettingsModal,
+#closeBlacklistModal,
+#importExportChoiceClose,
+#closeWindowClose,
+#calendarModalClose,
+#closeAppDetailModal,
+#closeCategoryDetailModal {
+    background: transparent;
+    border: none;
+}
+
+#closeSettingsModal:hover,
+#closeUpdateCheckModal:hover,
+#closeAppSettingsModal:hover,
+#closeBlacklistModal:hover,
+#importExportChoiceClose:hover,
+#closeWindowClose:hover,
+#calendarModalClose:hover,
+#closeAppDetailModal:hover,
+#closeCategoryDetailModal:hover {
+    background: rgba(255,255,255,0.08);
+}
+
+#settingsModal > div,
+#appSettingsModal > div,
+#blacklistModal > div,
+#categoryDetailModal > div {
+    padding: 1.25rem 1.5rem 1.5rem;
+}
+
+#updateCheckModal > div,
+#confirmModal > div {
+    padding: 1.25rem;
+}
+
+#settingsModal > div {
+    max-height: calc(100vh - 2rem);
+    display: flex;
+    flex-direction: column;
+}
+
+#settingsModal > div > .space-y-4 {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+
+#settingsModal .mb-6,
+#appSettingsModal .mb-4,
+#blacklistModal .mb-4,
+#categoryDetailModal .mb-4 {
+    margin-bottom: 0.75rem;
+}
+
+#settingsModal .mt-6,
+#confirmModal .mt-6 {
+    margin-top: 1rem;
+}
+
+#closeWindowModal .close-window-dialog {
+    width: min(calc(100vw - 2rem), 22rem);
+    max-width: 22rem !important;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: linear-gradient(155deg, rgba(18, 28, 48, 0.98), rgba(13, 23, 41, 0.99));
+}
+
+#closeWindowModal .close-window-header {
+    padding: 1rem 1.5rem 0.5rem;
+    align-items: center;
+}
+
+#closeWindowModal .close-window-body {
+    padding: 0.125rem 1.5rem 1rem;
+}
+
+#closeWindowModal .close-window-actions {
+    padding: 0 1.5rem 1.5rem;
+    gap: 0.75rem;
+}
+
+#closeWindowTitle {
+    margin: 0;
+    font-size: 1.125rem;
+    line-height: 1.75rem;
+}
+
+#closeWindowModal .close-window-body label {
+    margin-top: 0;
 }
 
 /* 渐变背景 */
@@ -252,6 +457,7 @@ body:active .star {
 }
 
 /* 日历网格 */
+.calendar-month-box { min-width: 0; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
 .cal-cell { padding: 8px; text-align: center; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
 .cal-cell:hover { background: rgba(59, 130, 246, 0.2); }
@@ -279,6 +485,10 @@ body:active .star {
     box-sizing: border-box;
 }
 
+.app-list-card {
+    padding: 0.625rem 0.75rem;
+}
+
 /* 卡片聚焦效果（双击饼图/条状图联动高亮） */
 .app-card.card-focus {
     background: rgba(59, 130, 246, 0.15) !important;
@@ -290,8 +500,8 @@ body:active .star {
 /* 左侧应用列表：三段式对齐（应用名 | 时长 | 占比） */
 .app-list-row {
     display: grid;
-    grid-template-columns: 1fr auto auto;
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) 86px 44px;
+    gap: 14px;
     align-items: center;
     min-width: 0;
 }
@@ -299,12 +509,43 @@ body:active .star {
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
+}
+.app-list-icon {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.375rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+.app-list-icon img {
+    width: 1.25rem;
+    height: 1.25rem;
+    object-fit: contain;
+}
+.app-list-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 .app-list-name {
+    display: block;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.96);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+.app-list-duration-text {
+    font-size: 0.75rem;
+    line-height: 1rem;
+    color: rgba(156, 163, 175, 1);
 }
 .app-list-duration {
     min-width: 64px;
@@ -312,11 +553,37 @@ body:active .star {
     font-size: 0.75rem;
     color: rgba(255, 255, 255, 0.85);
 }
+.app-list-meter {
+    width: 86px;
+    min-width: 86px;
+}
+.app-list-meter-track {
+    width: 100%;
+    height: 0.375rem;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #0B1120;
+}
+.app-list-meter-fill {
+    height: 100%;
+    border-radius: 999px;
+}
 .app-list-percent {
-    min-width: 56px;
+    min-width: 44px;
     text-align: right;
     font-size: 0.75rem;
     color: rgba(255, 255, 255, 0.7);
+}
+
+/* Fallback for app cards rendered in settings/category modals. */
+.app-card > .flex.items-center.min-w-0 {
+    gap: 12px;
+}
+
+.app-card > .flex.items-center.min-w-0 > div:first-child {
+    width: 2rem;
+    height: 2rem;
+    margin-right: 0 !important;
 }
 
 /* 饼图旁单行列表（应用/分类）：圆点 + 短名 - 时间 百分比 */

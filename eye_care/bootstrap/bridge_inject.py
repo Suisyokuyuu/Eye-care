@@ -18,9 +18,18 @@ def inject_bridge_script(html: str) -> str:
   }
   window.electronAPI = {
     isElectron: true,
-    close: function() { if (window.pywebview && window.pywebview.api) window.pywebview.api.close_window(); },
-    minimize: function() { if (window.pywebview && window.pywebview.api) window.pywebview.api.minimize_window(); },
-    maximizeToggle: function() { if (window.pywebview && window.pywebview.api) window.pywebview.api.maximize_toggle(); },
+    close: function() {
+      if (window.__EYECARE_QT_CALL__) return window.__EYECARE_QT_CALL__('closeWindow', []);
+      if (window.pywebview && window.pywebview.api) return window.pywebview.api.close_window();
+    },
+    minimize: function() {
+      if (window.__EYECARE_QT_CALL__) return window.__EYECARE_QT_CALL__('minimizeWindow', []);
+      if (window.pywebview && window.pywebview.api) return window.pywebview.api.minimize_window();
+    },
+    maximizeToggle: function() {
+      if (window.__EYECARE_QT_CALL__) return window.__EYECARE_QT_CALL__('maximizeToggle', []);
+      if (window.pywebview && window.pywebview.api) return window.pywebview.api.maximize_toggle();
+    },
 
     getSnapshot: function(params) {
       var q = '';

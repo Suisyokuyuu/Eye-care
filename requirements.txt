@@ -12,17 +12,11 @@ click==8.3.1
 # YAML parsing
 PyYAML==6.0.3
 
-# pywebview shell (Windows/WebView2 + pythonnet)
-pywebview==6.1
-pythonnet==3.0.5
-clr-loader==0.2.10
+# Qt host (PySide6 + QWebEngine) — 6.11.1 为 Python 3.14 兼容版本
+PySide6==6.11.1
 
 # Windows toast notification
 win10toast==0.9
-
-# Tray icon
-pystray==0.19.5
-Pillow==12.1.0
 
 # System monitoring
 psutil==7.2.2
@@ -33,6 +27,3 @@ pywin32==311
 # PyInstaller (for packaging)
 pyinstaller==6.19.0
 pyinstaller-hooks-contrib==2026.1
-
-# Qt host migration target
-PySide6==6.9.2

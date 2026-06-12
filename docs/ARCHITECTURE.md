@@ -1,65 +1,74 @@
-# ARCHITECTURE（交付终版）
+# 架构说明
 
-更新时间：2026-02-22
+## 启动链路
 
-## 1) 启动链路（代码事实）
+`main.py` 是唯一入口，负责解析参数、确定数据目录、启动 API/headless 或桌面模式。
 
-1. `main.py` 解析参数并调用 `run_pywebview_shell()`（默认 UI 模式）。
-2. `start_backend_services()` 在 `services_init` 线程内完成：
-   - 创建并启动 `AppController`（含 `tick_loop`）。
-   - 创建 Flask App，挂载 UI 站点路由（`/`、`/rest/`、`/notify/`）和 `/api/*`。
-3. 主线程调用 `wait_flask_ready()` 探活，随后 `webview.create_window()` 创建主窗口。
-4. 组装 UI 基础设施：`GuiDispatcher`、`WindowApi`、`RestWindowController`、`NotifyWindowController`。
-5. 创建并启动 `NotificationManager` + `NotifierService`（后台轮询 `snapshot_today(mark_prompted=False)`）。
-6. 异步启动托盘初始化线程 `tray_init`。
-7. 进入 `webview.start(..., func=_on_webview_start)`：GUI loop 持续 `dispatcher.run_pending()` 消费任务。
+- `--no-ui --api-port PORT`：只启动 `AppController` 和 Flask API。
+- `--no-ui`：启动控制器并保持后台采样，不开放指定端口 API。
+- 默认桌面模式：进入 `eye_care.qt.run_qt_shell`（Qt host，唯一桌面壳）。
 
-## 2) 模块职责边界
+Qt host 启动后会：
 
-### Notify 链路
+1. 初始化日志到 `data_dir/debug.log`。
+2. 创建 `AppController`。
+3. 启动控制器采样线程。
+4. 在后台启动 Flask API 和本地 Web 静态站点。
+5. 创建主窗口、通知窗口桥接、休息遮罩桥接和托盘菜单。
+6. 启动 `NotifierService` 轮询控制器快照。
 
-- 判定来源：`AppController._get_runtime_extra()` 生成 `rest.should_prompt`。
-- 调度去重：`NotificationManager.on_snapshot()` 负责冷却、去重、入队。
-- 展示执行：`NotifyWindowController.show(...)` 仅负责窗口展示与样式。
-- 业务确认：`mark_rest_notified()` 仅在用户操作（rest/snooze/dismiss）后通过回调触发。
+> **注**：Legacy pywebview host 已于 v1.1 移除。`--host` 参数仅接受 `qt`，保留参数仅为向后兼容。
 
-### Rest 链路
+## 核心模块
 
-- API 入口：`/api/rest/start|complete|snooze`。
-- 展示入口：`WindowApi.rest_show_overlay()` -> `dispatcher.post_rest_show()` -> `RestWindowController.show_overlay()`。
-- 状态写入：`AppController` 统一管理 rest 状态（开始、完成、snooze、守卫冷却）。
+`AppController` 是当前核心状态机和采样中心：
 
-## 3) 线程模型（交付口径）
+- 读取和保存 `AppConfig`。
+- 调用 Windows probe 获取前台应用和空闲时间。
+- 统计应用使用秒数。
+- 维护连续工作时间、休息 due/notified/snooze/resting 状态。
+- 处理正常、勿扰、离开、自动 idle、指定应用自动勿扰等运行模式。
+- 向 `JsonWalRepository` 写入 usage 和事件。
 
-- GUI 线程：唯一可执行窗口操作（show/hide/destroy/evaluate_js/Win32 样式）。
-- `services_init`：后台初始化 Controller + Flask。
-- `tick_loop`：采样前台应用、累计 usage、维护 rest 状态机、定时 flush/checkpoint。
-- `notifier_service`：按周期拉取快照并触发通知入队判断。
-- `tray_init` / tray 内部线程：托盘菜单生命周期。
-- `checkpoint`：后台 merge 线程。
-- `notify_fade_*` / `rest_fade_*`：短生命周期渐入渐出线程，仅做动画计算+投递。
+`JsonWalRepository` 负责本地数据：
 
-结论：后台线程可执行业务逻辑，但不得直接操作窗口对象。
+- 当前分钟先写入内存和 WAL。
+- 周期性 flush。
+- 退出或 checkpoint 时 merge 到主 JSONL 文件。
+- 支持每日缓存、范围查询、app/category 汇总、事件查询和 app 数据删除。
 
-## 4) 生命周期
+`services/` 是迁移中的服务层：
 
-### 运行期
+- `SnapshotService`
+- `ConfigService`
+- `RestService`
+- `StatsService`
+- `DesktopService`
+- `DiagService`
 
-- GUI loop 每帧消费 dispatcher 队列。
-- `tick_loop` 每秒采样并持续写入仓储缓存与 WAL。
-- `NotifierService` 独立轮询，不直接调用窗口 API。
+路由层正在逐步改为调用这些服务，但控制器仍承担大量业务逻辑。
 
-### 退出期（`_request_exit`）
+## UI 与桌面壳
 
-1. `stop_event.set()`。
-2. `dispatcher.stop()` 关闭新任务入队。
-3. 顺序执行：`notifier_service.stop()` -> `controller.stop()` -> `tray.stop()`。
-4. 销毁 rest/notify 窗口并释放单实例锁。
-5. `webview.start()` 自然返回，进程正常退出（无 `os._exit` 强退）。
+主 UI 位于 `eye_care/ui/web/index.html`，静态资源在 `eye_care/ui/web/assets/`。
 
-## 5) UI/API 拓扑
+Qt host 使用 `QWebEngineView` 加载主页面，并通过 `QWebChannel` 暴露桥接对象。休息遮罩和通知窗口各自创建独立的透明置顶窗口。前端通过 `window.pywebview.api` 兼容层与 Qt 桥接通信。
 
-- UI 页面：`/`（主页面）、`/rest/`（休息页）、`/notify/`（通知页）。
-- API：`/api/*`，由同一 Flask 进程提供。
-- 前端业务交互：统一走 HTTP `/api/*`。
-- `pywebview.api`：仅承担窗口能力与导入导出等本地能力桥接。
+## 本地 API
+
+Flask 只监听 `127.0.0.1`。写操作要求 `X-EYECare-Token`，token 由 `/api/auth/token` 提供。主要路由分组：
+
+- `auth.py`：token。
+- `health.py`：健康检查。
+- `snapshot.py`：首页快照。
+- `config.py`：配置、图标、分类、更新检查。
+- `stats.py`：应用详情、列表、黑名单、日历。
+- `rest.py`：休息、推迟、勿扰。
+- `diag.py`：前端诊断日志。
+- `debug.py`：仅 debug 模式注册。
+
+## 诊断
+
+诊断事件通过 `eye_care.diagnostics.diag_events.emit` 进入策略引擎。策略引擎会读取 `docs/diagnostics/event_codes.yml`，决定事件是否在普通模式输出、是否节流、属于哪个模块。
+
+通知挂起测试会读取 `debug.log`，使用 `eye_care.diagnostics.notify_hang_analyzer` 检查通知状态机是否出现未闭合的 `HIDING` 状态或关键失败事件。

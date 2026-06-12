@@ -19,7 +19,7 @@ else:
 UI_WEB_DIR = _BUNDLE_ROOT / "eye_care" / "ui" / "web"
 UI_INDEX_PATH = UI_WEB_DIR / "index.html"
 
-# 默认端口：pywebview 壳使用 17993
+# 默认端口：本地 API 使用 17993
 DEFAULT_API_PORT = 17993
 
 HEALTH_POLL_MS = 50  # 从300ms降到50ms，更快响应

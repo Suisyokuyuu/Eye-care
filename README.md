@@ -1,147 +1,86 @@
 # EyE Care
 
-> ⚠️ **实验性项目说明**  
-> 本项目是一款实验性产品，**所有代码实现均由 AI 生成**，并且应用所使用的 **图标（ICON）文件也由 AI 生成**。  
-> 在实际使用和二次开发时，请务必自行进行充分测试和代码审查，并自行承担相关风险。
+EyE Care 是一个 Windows 桌面护眼与应用使用时间统计工具。它会在本地记录前台应用使用时间，并在连续用眼达到阈值后弹出休息提醒和全屏休息遮罩。
 
-**Windows 屏幕使用统计与护眼休息提醒工具**
+当前项目处在 Qt host 迁移后的整理阶段：默认入口使用 PySide6/QWebEngine，旧的 pywebview host 仍保留但不再作为首选运行方式。代码中还有一些历史乱码注释和迁移残留，已在任务清单中单独记录。
 
-自动追踪你的屏幕使用时间，在连续用眼达到阈值时提醒你休息，帮助你养成健康的用眼习惯。
+## 功能现状
 
----
+- 前台应用使用时长统计，支持按天、周、月查看。
+- 应用分类、显示名覆盖、黑名单和指定应用自动勿扰。
+- 连续工作提醒、通知气泡、推迟、立即休息、休息完成记录。
+- 全屏休息遮罩，支持多屏。
+- 本地 JSONL + WAL 数据存储，启动/退出时合并。
+- 设置导入导出、全部数据导入导出。
+- 本地 HTTP API 和本地 Web UI。
+- Windows 托盘菜单与开机启动配置。
 
-## ✨ 核心功能
-
-### 📊 屏幕使用统计
-- **按应用统计**：自动记录每个前台应用的使用时长
-- **智能空闲检测**：空闲期间自动暂停计时
-- **应用分类管理**：自定义应用分类和显示名称
-- **数据可视化**：今日统计、分类统计、时间分布图表
-
-### ⏰ 护眼提醒
-- **自动提醒**：连续用眼达到设定时间（默认20分钟）后自动弹出休息提醒
-- **休息倒计时**：可设置休息时长，倒计时结束后自动恢复
-- **多种模式**：
-  - **正常模式**：正常计时与提醒
-  - **勿扰模式**：继续计时，但不弹提醒
-  - **离开模式**：暂停计时与提醒
-
-### 🎯 便捷操作
-- **系统托盘**：最小化到托盘，右键快速访问常用功能
-- **立即休息**：随时手动触发休息提醒
-- **历史数据**：查看今日、本周、本月的使用统计
-
----
-
-## 🚀 快速开始
-
-### 方式一：直接运行（推荐）
-
-双击运行 `EyE Care.exe`，首次运行会自动创建数据目录。
-
-### 方式二：从源码运行
-
-1. **安装依赖**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **运行程序**
-   ```bash
-   python main.py
-   ```
-
----
-
-## 📖 使用说明
-
-### 首次使用
-
-1. 启动程序后，主界面会显示今日使用统计
-2. 默认设置：连续使用 20 分钟后提醒休息，休息时长 20 秒
-3. 可在**设置**页面调整提醒间隔和休息时长
-
-### 主要操作
-
-- **查看统计**：主界面显示今日使用时间、应用分类、时间分布
-- **应用管理**：点击应用名称可查看详情、修改分类、设置显示名
-- **休息提醒**：达到阈值后自动弹出，可选择「开始休息」「稍后提醒」「跳过」
-- **托盘操作**：右键托盘图标可快速切换模式、立即休息、显示窗口
-
-### 数据存储
-
-- 所有数据存储在 `user_data/` 目录
-- 支持数据导出和导入
-- 日志文件：`user_data/debug.log`
-
----
-
-## ⚙️ 高级选项
-
-### 启动参数
+## 快速运行
 
 ```bash
-python main.py [选项]
+pip install -r requirements.txt
+python main.py
 ```
 
-- `--data-dir PATH`：自定义数据目录（默认 `./user_data`）
-- `--no-ui`：无界面模式（仅运行后端 API）
-- `--api-port PORT`：API 模式端口（需配合 `--no-ui`）
-- `--no-single`：关闭单实例锁（允许多个实例）
-- `--debug`：启用调试控制台
+常用参数：
 
-### 开发脚本
-
-- `install_deps.bat`：安装依赖
-- `run_debug.bat`：调试模式启动
-- `build_exe.bat`：打包为可执行文件
-- `clear_pycache.bat`：清理缓存文件
-
----
-
-## 📦 打包说明
-
-使用 `build_exe.bat` 打包，输出目录：`dist\EyE Care\`
-
-打包后的目录结构：
-```
-dist\EyE Care\
-├── EyE Care.exe          # 主程序
-├── _internal\            # 运行时文件
-├── user_data\           # 数据目录（首次运行自动创建）
-├── eye_care\            # 程序模块
-├── docs\                # 文档
-└── README.md            # 说明文档
+```bash
+python main.py --debug
+python main.py --data-dir ./user_data_dev
+python main.py --no-ui
+python main.py --no-ui --api-port 17993
+python main.py --host qt
+python main.py --host legacy
 ```
 
----
+默认数据目录是项目根目录下的 `user_data/`。打包版本会把数据放在 exe 同级目录的 `user_data/`。
 
-## 🔒 安全说明
+## 项目结构
 
-- **API 服务**：仅绑定本地地址（127.0.0.1），不对外网开放
-- **数据隐私**：所有数据存储在本地，不会上传到任何服务器。强烈建议分享程序包时剔除个人数据（user_data文件夹）
-- **日志文件**：第一次运行后会生成诊断信息(debug.log)，请勿在公开渠道分享
+```text
+main.py                         程序入口和运行模式选择
+eye_care/api/                   Flask 本地 API
+eye_care/controller/            采样、提醒、休息和运行状态核心控制器
+eye_care/data/                  JSONL/WAL 数据仓库与导入导出
+eye_care/config/                配置模型与读写
+eye_care/qt/                    默认 Qt 桌面壳
+eye_care/bootstrap/             启动常量、DPI、旧 host 支撑
+eye_care/ui/                    Web 页面投递、桥接、窗口工具
+eye_care/notify/                通知窗口和通知调度
+eye_care/rest/                  旧 host 休息遮罩控制器
+eye_care/services/              API 服务层抽取
+eye_care/diagnostics/           诊断事件、策略和日志分析
+eye_care/ui/web/                本地 Web UI、休息页、通知页和静态资源
+tests/hang_scenarios/           当前保留的通知挂起回归场景
+docs/                           新整理后的项目文档
+```
 
----
+## 文档入口
 
-## 📚 技术文档
+从 [docs/index.md](docs/index.md) 开始读：
 
-完整技术文档与诊断规范见 [docs/index.md](docs/index.md)，包含：
-- 架构设计
-- 数据规范
-- GUI 调度约束
-- 诊断事件字典
-- 自动化测试与卡死场景：见 `docs/tests/overview.md`、`docs/tests/hang_scenarios.md`
+- 架构说明：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- 数据与 API：[docs/DATA_AND_API.md](docs/DATA_AND_API.md)
+- 测试说明：[docs/TESTING.md](docs/TESTING.md)
+- 未完成任务：[docs/TASKS.md](docs/TASKS.md)
+- 诊断事件运行时字典：[docs/diagnostics/event_codes.yml](docs/diagnostics/event_codes.yml)
 
----
+## 测试
 
-## 💻 系统要求
+当前保留的回归测试只覆盖通知窗口的关键挂起风险：
 
-- **操作系统**：Windows 10 / Windows 11
-- **Python**（仅源码运行需要）：Python 3.8+
+```bash
+pytest -m hang_scenario tests/hang_scenarios -vv
+pytest -m "hang_scenario and not long" tests/hang_scenarios -vv
+```
 
----
+这些测试会启动桌面程序，依赖 Windows GUI、PySide6/QWebEngine 和本地端口，不适合作为普通无头单元测试。
 
-## 📄 许可证
+## 打包
 
-MIT License
+```bash
+build_exe.bat
+```
+
+打包配置在 `EyE Care.spec`。依赖由 `requirements.txt` 固定。
+

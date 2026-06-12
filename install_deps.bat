@@ -13,14 +13,15 @@ if not exist "requirements.txt" (
     exit /b 1
 )
 
-:: 优先使用当前目录下的虚拟环境
+:: 优先使用项目虚拟环境，否则使用系统 Python（D:\Python）
 if exist "venv\Scripts\python.exe" (
     echo 使用虚拟环境: %~dp0venv
     set "PY=venv\Scripts\python.exe"
     set "PIP=venv\Scripts\pip.exe"
 ) else (
-    set "PY=python"
-    set "PIP=pip"
+    echo 使用系统 Python: D:\Python\python.exe
+    set "PY=D:\Python\python.exe"
+    set "PIP=D:\Python\python.exe -m pip"
 )
 
 echo 正在安装: %PIP% install -r requirements.txt

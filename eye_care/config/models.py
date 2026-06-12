@@ -57,3 +57,6 @@ class AppConfig:
     # ---- 状态机升级开关 ----
     # Notify 显式状态机开关：默认关闭（legacy 行为），打开后由状态机裁决并驱动执行
     sm_notify_v2: bool = False
+
+    # 关闭主窗口时的行为："ask"（询问）| "minimize"（最小化到托盘）| "quit"（退出）
+    close_action: str = "ask"

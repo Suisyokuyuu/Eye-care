@@ -1,26 +1,25 @@
-# Docs Index（交付终版）
+# EyE Care 文档索引
 
-更新时间：2026-02-24  
-适用范围：应用版本 V1.0.3
+更新时间：2026-06-07
 
-## 文档说明
+这套文档按当前代码重新整理，旧的乱码迁移文档已删除。文档只描述现在能从代码确认的事实；迁移残留、缺口和疑似问题放在任务清单里。
 
-本目录为交付前最终文档集。若文档与代码冲突，以代码实现为准。
+## 推荐阅读顺序
 
-## 阅读顺序（建议）
+1. [项目总览](../README.md)
+2. [架构说明](ARCHITECTURE.md)
+3. [数据与 API](DATA_AND_API.md)
+4. [GUI 线程规则](GUI_THREAD_RULES.md)
+5. [测试说明](TESTING.md)
+6. [未完成任务清单](TASKS.md)
 
-1. `docs/FROZEN_SPEC.md`（冻结红线与验收口径）
-2. `docs/ARCHITECTURE.md`（启动链路、线程与边界）
-3. `docs/DATA_SPEC.md`（数据存储与 API 数据口径）
-4. `docs/GUI_DISPATCHER_RULES.md`（GUI 调度约束）
-5. `docs/diagnostics/event_codes.yml`（诊断事件字典，运行时依赖）
-6. `docs/diagnostics/NORMAL_MODE_LOGGING.md`（普通模式日志行为）
-7. `docs/diagnostics/DIAG_EVENT_MAPPING.md`（事件映射与别名摘要）
-8. `docs/CHANGELOG_FREEZE.md`（冻结期文档变更记录）
-9. `docs/ROADMAP.md`（下版本功能规划）
+## 运行时相关文档
 
-## 交付检查提醒
+- [诊断事件字典](diagnostics/event_codes.yml)：运行时会读取这个 YAML，不能随意删除。
 
-- 运行模式与日志策略必须以 `docs/diagnostics/event_codes.yml` + `eye_care/diagnostics/policy_engine.py` 为准。
-- API 路由以 `eye_care/api/routes/*.py` 为准。
-- 数据存储结构以 `eye_care/data/json_wal_repo.py` 为准。
+## 当前边界
+
+- 默认桌面壳是 Qt host：`python main.py --host qt`。
+- legacy pywebview host 仍在代码中，主要用于迁移兼容。
+- UI 文案和大量历史注释存在编码损坏，属于后续修复任务。
+- 回归测试不是完整覆盖，目前只保留通知窗口挂起相关的有效集成测试。
