@@ -54,9 +54,8 @@ class AppConfig:
     # 排除计时的黑名单（app_short 列表，不记录、不触发休息）
     blacklist_apps: List[str] = field(default_factory=list)
 
-    # ---- 状态机升级开关 ----
-    # Notify 显式状态机开关：默认关闭（legacy 行为），打开后由状态机裁决并驱动执行
-    sm_notify_v2: bool = False
-
     # 关闭主窗口时的行为："ask"（询问）| "minimize"（最小化到托盘）| "quit"（退出）
     close_action: str = "ask"
+
+    # 启动引导：True=启动时显示引导；首次完成/跳过后自动置 False
+    show_onboarding: bool = True

@@ -1,24 +1,15 @@
 # Eye Care - Requirements for PyInstaller packaging
 
-# Core
-flask==3.1.2
-Werkzeug==3.1.5
-Jinja2==3.1.6
-itsdangerous==2.2.0
-MarkupSafe==3.0.3
-blinker==1.9.0
-click==8.3.1
-
 # YAML parsing
 PyYAML==6.0.3
 
-# Qt host (PySide6 + QWebEngine) — 6.11.1 为 Python 3.14 兼容版本
+# Qt host (PySide6 / Qt Quick) — 6.11.1 为 Python 3.14 兼容版本。
+# UI 已全面迁至 QML/Qt Quick 原生外壳（不再使用 QWebEngine / Flask / web SPA）；
+# 用到 QtQuick.Controls.Basic / Shapes / Effects(MultiEffect)。
+# QML 插件随此 wheel 一并安装，无需额外包；打包收集见 EyE Care.spec。
 PySide6==6.11.1
 
-# Windows toast notification
-win10toast==0.9
-
-# System monitoring
+# System monitoring (foreground/idle 探针)
 psutil==7.2.2
 
 # Windows API wrappers

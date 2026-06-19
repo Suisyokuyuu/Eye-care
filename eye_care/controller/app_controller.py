@@ -102,6 +102,9 @@ class AppController:
         # - 到点只弹一次，直到发生：休息开始/用户离开(Idle)/“跳过本轮”(下次阈值再弹)
         self._cont_work_s: int = 0
         self._rest_ack_work_s: int = 0  # 'skip this cycle' anchor
+        # 休息轮次：每次连续用眼被清零（rest_complete）即 +1。通知去重键带上它，避免计时重置后
+        # work_s 重新爬过同一个"桶"被去重逻辑当成重复而吞掉（用户主诉：通知第一次弹、后面不弹）。
+        self._rest_cycle: int = 0
         self._rest_due: bool = False
         self._rest_notified: bool = False
         self._rest_snooze_until: float = 0.0
@@ -449,6 +452,7 @@ class AppController:
                 self._rest_due = False
                 self._rest_notified = False
                 self._rest_snooze_until = 0.0
+                self._rest_cycle += 1  # 新一轮连续用眼，去重键随之翻新，使下一轮提醒能再次弹出
                 should_emit = True
         if should_emit:
             self._emit_event(name="rest_complete", payload={})
@@ -669,6 +673,7 @@ class AppController:
             notified = bool(self._rest_notified)
             snooze_until = float(self._rest_snooze_until)
             next_prompt_work_s = int(getattr(self, '_rest_next_prompt_work_s', 0) or 0)
+            rest_cycle = int(getattr(self, '_rest_cycle', 0) or 0)
             is_resting = bool(self._is_resting)
             thr_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
             elapsed = max(0, int(work_s) - int(ack_work_s))
@@ -746,6 +751,7 @@ class AppController:
             "ack_work_s": ack_work_s,
             "elapsed_since_ack_s": elapsed,
             "threshold_s": thr_s,
+            "cycle": rest_cycle,
             "due": due,
             "notified": notified,
             "snooze_until": snooze_until,
@@ -780,7 +786,6 @@ class AppController:
             "state": self.state,
             "rest": rest,
             "debug": {"notify": self.is_debug_notify()},
-            "sm_notify_v2": getattr(self.cfg, "sm_notify_v2", False),
         }
 
     def snapshot_today(self, mark_prompted: bool = False):
@@ -1040,11 +1045,17 @@ class AppController:
                         elif self.is_debug_notify() and (not fg_short):
                             log.info("debug: tick skip usage (no fg app)")
 
-                # 2) 自动完成休息：idle 达到 rest_s 时触发一次（用户离开=已休息）
+                # 2) 自动完成休息：用户离开足够久 = 已休息，重置连续用眼。
                 # 注意：放在 if not auto_idle: 块之外，确保 idle 状态下也能触发。
                 # 但 paused/force_idle/dnd 下不跨越用户显式模式，禁止自动 complete。
+                #
+                # [FIX] 判定"已休息"的 idle 阈值改用 idle_threshold_s（用户设的"无操作暂停"时间），
+                # 不再用 reminder_rest_seconds（休息时长，默认仅 20s）。旧逻辑把 20s 短暂离开就当成
+                # 休息、把连续用眼清零——即使用户把 idle 阈值调到 999s 也照清不误（用户主诉）。
+                # 仍保证不小于一次休息时长，避免 idle 阈值被设得过小（如 3s）时一停就清零。
                 rest_s = int(getattr(self.cfg, "reminder_rest_seconds", 20) or 20)
-                if rest_s > 0 and prev_idle < rest_s and idle >= rest_s:
+                rested_idle_th = max(int(idle_th), rest_s)
+                if rested_idle_th > 0 and prev_idle < rested_idle_th and idle >= rested_idle_th:
                     if (not self.state.is_paused) and (not self.state.force_idle) and (not self.state.is_dnd):
                         self.rest_complete()
 

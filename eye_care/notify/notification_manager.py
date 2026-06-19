@@ -33,8 +33,9 @@ class NotificationManager:
         self._show_toast = show_toast_fallback or (lambda _: None)
         self._min_interval_s = max(1, int(min_interval_s))
         self._last_show_time: float = 0.0
-        self._shown_prompt_keys: set[tuple[str, int]] = set()
-        self._pending_prompt_keys: dict[tuple[str, int], dict] = {}
+        # prompt_key = (local_date, rest_cycle, work_bucket)
+        self._shown_prompt_keys: set[tuple] = set()
+        self._pending_prompt_keys: dict[tuple, dict] = {}
         self._mark_notified = mark_notified
         self._pending_lock = threading.Lock()
 
@@ -69,8 +70,11 @@ class NotificationManager:
         work_s = int(rest.get("work_s") or 0)
         threshold_s = max(1, int(rest.get("threshold_s") or 60))
         work_bucket = work_s // threshold_s
+        # 休息轮次：连续用眼每被清零一次就 +1。带上它后，计时重置后重新爬过同一个 bucket
+        # 不会再被当成重复吞掉（修复"通知第一次弹、后面不弹"）。
+        cycle = int(rest.get("cycle") or 0)
         local_date = local_date_today()
-        prompt_key = (local_date, work_bucket)
+        prompt_key = (local_date, cycle, work_bucket)
         now = time.time()
 
         if now - self._last_show_time < self._min_interval_s:
@@ -113,7 +117,7 @@ class NotificationManager:
             if dbg:
                 log.info("notify: show_done(result=True)")
             try:
-                if callable(self._mark_notified) and not extra.get("debug_only") and prompt_key[1] >= 0:
+                if callable(self._mark_notified) and not extra.get("debug_only") and prompt_key[-1] >= 0:
                     self._mark_notified()
             except Exception:
                 log.exception("notify: _mark_notified failed on result=True")
@@ -146,7 +150,7 @@ class NotificationManager:
         if len(self._shown_prompt_keys) <= _MAX_PROMPT_KEYS:
             return
         today = local_date_today()
-        keep = {(d, b) for (d, b) in self._shown_prompt_keys if d >= today}
+        keep = {k for k in self._shown_prompt_keys if k[0] >= today}
         if len(keep) < len(self._shown_prompt_keys):
             self._shown_prompt_keys = keep
         if len(self._shown_prompt_keys) > _MAX_PROMPT_KEYS:
@@ -155,7 +159,7 @@ class NotificationManager:
     def clear_last_shown_key(self) -> None:
         today = local_date_today()
         before_count = len(self._shown_prompt_keys)
-        self._shown_prompt_keys = {(d, b) for (d, b) in self._shown_prompt_keys if d < today}
+        self._shown_prompt_keys = {k for k in self._shown_prompt_keys if k[0] < today}
         after_count = len(self._shown_prompt_keys)
         if before_count != after_count:
             log.info("已清除今日通知去重标记: 清除前=%s, 清除后=%s", before_count, after_count)

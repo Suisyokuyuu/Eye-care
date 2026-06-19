@@ -222,6 +222,29 @@ class ConfigService:
                 except Exception as exc:
                     log.debug("cached icon read failed for %s: %s", app_short, exc)
 
+        # 兜底（对齐 /api/icon 路由）：sha1 缺失（如 exe >64MB / 读取受限，例如 tabby）或缓存提取未成时，
+        # 提取到临时文件直接返回（不写缓存索引，故这类 app 不会进 icon_index.json）。
+        import os as _os
+        import tempfile as _tempfile
+        fd, tmp_png = _tempfile.mkstemp(suffix=".png")
+        _os.close(fd)
+        try:
+            if extract_icon_to_png(exe_path, tmp_png, size=64):
+                raw = Path(tmp_png).read_bytes()
+                return {
+                    "ok": True,
+                    "app_short": app_short,
+                    "data_url": "data:image/png;base64," + base64.b64encode(raw).decode("ascii"),
+                    "cache": "temp",
+                }
+        except Exception as exc:
+            log.debug("icon temp extract failed for %s: %s", app_short, exc)
+        finally:
+            try:
+                Path(tmp_png).unlink(missing_ok=True)
+            except OSError:
+                pass
+
         return {"error": "extract failed", "code": "icon_error", "app_short": app_short}
 
     def get_categories(self) -> dict:

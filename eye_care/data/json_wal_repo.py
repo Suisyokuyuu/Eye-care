@@ -517,16 +517,6 @@ class JsonWalRepo(Repository):
                     pass
             for key in keys_to_remove:
                 self._last_active_cache.pop(key, None)
-        
-        # 失效 API 缓存（延迟导入避免循环依赖）
-        try:
-            # 注意：json_wal_repo 位于 eye_care.data 包下，这里用两级相对导入到 eye_care.api.routes.stats
-            from ..api.routes.stats import _invalidate_app_details_cache
-
-            _invalidate_app_details_cache(app_key=app_key, local_date=local_date)
-        except ImportError:
-            # API 模块可能未加载（例如纯后端批处理场景），此时忽略缓存失效请求
-            pass
 
     def add_minute(self, rec: MinuteUsageRecord) -> None:
         with self._lock:
@@ -563,12 +553,27 @@ class JsonWalRepo(Repository):
 
     # ---------------- reads ----------------
     def _evict_oldest_day(self):
-        """联动淘汰：以 _daily_cache 为唯一 day-LRU 顺序源，三套缓存同步删除该天"""
+        """联动淘汰：以 _daily_cache 为唯一 day-LRU 顺序源，三套缓存同步删除该天。
+
+        **绝不淘汰"今天"**：今天的 daily 缓存由 add_usage 实时累积，但 _load_day_into_cache
+        只从磁盘 minute/WAL 文件重建（漏掉内存里尚未落盘的增量与当前未结算分钟）。一旦今天被淘汰，
+        下次读取会触发部分重载 → 应用数突然塌缩（如打开日历逐日加载整月撑爆缓存后，今天只剩 1 个应用）。
+        """
+        from datetime import datetime as _dtnow, timezone as _tz
+        today = _dtnow.now(_tz.utc).astimezone().date().isoformat()
         while len(self._daily_cache) > MAX_CACHE_DAYS:
-            oldest_day, _ = self._daily_cache.popitem(last=False)
+            # 找最旧且非今天的日子淘汰；今天移到队尾、永不淘汰
+            victim = None
+            for day in self._daily_cache:            # OrderedDict：从最旧到最新
+                if day != today:
+                    victim = day
+                    break
+            if victim is None:                       # 只剩今天 → 停止（即便超过上限也保留今天）
+                break
+            self._daily_cache.pop(victim, None)
             # 同步淘汰 hourly 和 events
-            self._hourly_cache.pop(oldest_day, None)
-            self._events_cache.pop(oldest_day, None)
+            self._hourly_cache.pop(victim, None)
+            self._events_cache.pop(victim, None)
 
     def get_daily_usage(self, local_date: str) -> Dict[str, int]:
         with self._lock:
