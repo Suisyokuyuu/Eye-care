@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 
 from eye_care.bootstrap import dpi_console
-from eye_care.bootstrap.constants import DEFAULT_API_PORT
 from eye_care.diagnostics import log_exception_summary
 
 
@@ -20,8 +19,7 @@ def parse_args():
     ap.add_argument("--data-dir", default=None, help="Data directory, defaults to ./user_data")
     ap.add_argument("--no-ui", action="store_true", help="Run API/headless mode without desktop UI")
     ap.add_argument("--no-single", action="store_true", help="Disable single-instance guard")
-    ap.add_argument("--debug", action="store_true", help="Enable debug console and extra diagnostics")
-    ap.add_argument("--api-port", type=int, default=None, metavar="PORT", help="Explicit local API port")
+    ap.add_argument("--debug", action="store_true", help="Enable debug logging and extra diagnostics")
     ap.add_argument("--host", choices=("qt",), default=os.environ.get("EYECARE_HOST", "qt"), help="Desktop host to use (Qt only)")
     return ap.parse_args()
 
@@ -33,31 +31,6 @@ def main():
     app_root = PROJECT_ROOT
     data_dir = Path(args.data_dir).resolve() if args.data_dir else (app_root / "user_data")
     data_dir.mkdir(parents=True, exist_ok=True)
-
-    api_port = args.api_port
-    if api_port is None:
-        try:
-            api_port = int(os.environ.get("EYECARE_API_PORT", "0"))
-        except (TypeError, ValueError):
-            api_port = 0
-
-    if args.no_ui and api_port > 0:
-        from eye_care.api.server import run_server
-        from eye_care.controller.app_controller import AppController
-        from eye_care.diagnostics.logging_setup import setup_logging
-
-        setup_logging(data_dir / "debug.log")
-        log = logging.getLogger(__name__)
-        controller = AppController(data_dir=data_dir)
-        controller.start()
-        log.info("API mode: server on port %s", api_port)
-        try:
-            run_server(controller, host="127.0.0.1", port=api_port)
-        except KeyboardInterrupt:
-            return
-        finally:
-            controller.stop()
-        return
 
     if args.no_ui:
         from eye_care.controller.app_controller import AppController
@@ -77,11 +50,10 @@ def main():
             controller.stop()
         return
 
-    port = int(os.environ.get("EYECARE_API_PORT", str(DEFAULT_API_PORT)))
     try:
         from eye_care.qt import run_qt_shell
 
-        run_qt_shell(data_dir=data_dir, no_single=args.no_single, api_port=port, debug_console=args.debug)
+        run_qt_shell(data_dir=data_dir, no_single=args.no_single, debug_console=args.debug)
     except Exception as exc:
         try:
             import ctypes

@@ -76,12 +76,28 @@ def _stats_for_date(controller, local_date: str):
     }
 
 
+def _top_keys(usage: dict, top_n: int = 10, pct_threshold: float = 3.0):
+    """从 usage dict 中筛出柱状图显示的 top key 列表（最多 top_n 项，且占比 >= pct_threshold%）。
+    剩余项目合并为「其他」，故返回 list 不含「其他」——调用方自行追加。"""
+    total = sum(int(v or 0) for v in usage.values())
+    all_items = sorted(usage.items(), key=lambda x: int(x[1] or 0), reverse=True)
+    result = []
+    for k, v in all_items[:top_n]:
+        sec = int(v or 0)
+        pct = (100.0 * sec / total) if total > 0 else 0.0
+        if pct < pct_threshold:
+            break   # 低于阈值→本项及之后全部归入「其他」
+        if k:
+            result.append(k)
+    return result
+
+
 def _timebars_for_day(controller, local_date: str):
-    """按小时、按应用堆叠条数据：labels(0-23), keys(top5+其他), values(24 x 6)。"""
+    """按小时、按应用堆叠条数据：labels(0-23), keys(top10/5%+其他), values(24 x n)。"""
     repo = controller.repo
     daily = repo.get_daily_usage(local_date)
-    top_items = sorted((daily or {}).items(), key=lambda x: int(x[1] or 0), reverse=True)[:5]
-    keys = [k for k, _ in top_items if k] + ["其他"]
+    top_items = _top_keys(daily or {})
+    keys = top_items + ["其他"]
     if not keys:
         keys = ["其他"]
     bd = repo.get_hourly_breakdown(local_date, dim="app") if hasattr(repo, "get_hourly_breakdown") else {}
@@ -103,14 +119,13 @@ def _timebars_for_day(controller, local_date: str):
 
 
 def _timebars_for_range(controller, range_key: str, start_day: str, end_day: str):
-    """周/月：按天桶，keys 为范围内 top5+其他，values 为 days x keys。"""
+    """周/月：按天桶，keys 为范围内 top10/5%+其他，values 为 days x keys。"""
     from datetime import datetime as dt_module, timedelta
     from eye_care.data.repository import DateRange
     repo = controller.repo
     dr = DateRange(start_local_date=start_day, end_local_date=end_day)
     usage = controller.repo.get_usage_range(dr, dim="app") or {}
-    top_items = sorted(usage.items(), key=lambda x: int(x[1] or 0), reverse=True)[:5]
-    keys = [k for k, _ in top_items if k] + ["其他"]
+    keys = _top_keys(usage) + ["其他"]
     if not keys:
         keys = ["其他"]
     days_list = []

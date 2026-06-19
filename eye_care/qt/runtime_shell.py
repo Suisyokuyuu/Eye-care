@@ -1,3 +1,9 @@
+"""Qt 桌面宿主（QML 原生外壳）。
+
+迁移完成后，主窗、休息全屏遮罩、通知气泡全部为 QML/Qt Quick 原生实现，
+不再使用 QWebEngine / Flask / web SPA。后端 controller/services 经数据桥
+（eye_care.qt_quick.*）直接喂给 QML，无 HTTP 中转。
+"""
 from __future__ import annotations
 
 import json
@@ -6,51 +12,44 @@ import os
 import sys
 from pathlib import Path
 
-from eye_care.bootstrap.constants import DEFAULT_API_PORT, ENABLE_DRAG_REGION_INJECT, PROJECT_ROOT, UI_INDEX_PATH, UI_WEB_DIR
-from eye_care.bootstrap.bridge_inject import inject_bridge_script, inject_drag_region
-from eye_care.ui.app_runtime import start_backend_services, wait_flask_ready, _find_available_port
+from eye_care.bootstrap.constants import ASSETS_DIR, PROJECT_ROOT
 from eye_care.ui.action_contracts import normalize_notify_window_action
-from eye_care.ui.web_routes import build_ui_page_url
-from eye_care.ui.page_delivery import render_main_html, render_qt_subpage_html
+from eye_care.ui.file_dialog import _create_file_dialog_safe
 
 
-def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: bool = False) -> None:
+def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_console: bool = False) -> None:
     os.chdir(str(PROJECT_ROOT))
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    from eye_care.api.server import create_app
+    # --debug 等价于 EYECARE_DEBUG=1（与 is_debug_enabled() 缓存一致，其首次调用在下方 setup_logging）。
+    if debug_console:
+        os.environ.setdefault("EYECARE_DEBUG", "1")
+
     from eye_care.controller.app_controller import AppController
+    from eye_care.diagnostics import diag
     from eye_care.diagnostics.logging_setup import setup_logging
-    from eye_care.ui.web_routes import mount_ui_site_routes
     from eye_care.services.registry import build_service_registry
     from eye_care.ui.win_effects import WinEffects
-    from eye_care.ui.window_api import _create_file_dialog_safe
 
     try:
-        from PySide6.QtCore import QObject, QPropertyAnimation, QTimer, QRect, QUrl, Qt, Signal, Slot
+        from PySide6.QtCore import QMetaObject, QObject, QTimer, QUrl, Qt, Signal, Slot
         from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon
-        from PySide6.QtWebChannel import QWebChannel
-        from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QSystemTrayIcon
-        from PySide6.QtWebEngineCore import QWebEnginePage
-        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
     except Exception as exc:  # pragma: no cover - depends on local runtime
-        raise RuntimeError("PySide6/QWebEngine is required for --host qt") from exc
+        raise RuntimeError("PySide6 (QtQuick) is required for --host qt") from exc
 
     setup_logging(data_dir / "debug.log")
     log = logging.getLogger(__name__)
 
-    # Resolve API port: fall back if the preferred port is already taken
-    resolved_port = _find_available_port(api_port)
-    if resolved_port != api_port:
-        log.warning("qt.port_conflict preferred=%s resolved=%s", api_port, resolved_port)
-        api_port = resolved_port
+    debug_mode = (
+        bool(debug_console)
+        or os.environ.get("EYECARE_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+    )
+    log.info("host=qt startup (qml shell): debug_mode=%s", debug_mode)
 
-    log.info("host=qt startup: api_port=%s debug_console=%s", api_port, debug_console)
     win_effects = WinEffects(log)
 
     controller = None
-    controller_ready = {"value": False}
-    flask_ready = {"value": False}
     services = {"value": None}
     main_window_ref = {"value": None}
     rest_overlays = []
@@ -60,6 +59,32 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
     notification_manager_ref = {"value": None}
     notifier_service_ref = {"value": None}
     tray_ref = {"value": None}
+    qt_bridge_ref = {"value": None}
+    _qml_refs: dict = {}          # 持有 engine/bridges/poll/host_bridge 防 GC
+    qml_root_ref = {"value": None}  # QML AppShell 根 Window
+
+    def _qml_start_rest() -> None:
+        """「立刻休息」：复用 host_bridge.startRest + showRestOverlay。"""
+        hb = _qml_refs.get("host_bridge")
+        if hb is None:
+            log.warning("qt.qml_shell.rest: host_bridge 未就绪")
+            return
+        try:
+            r = hb.startRest()
+            log.info("qt.qml_shell.rest start_result=%s", r)
+            hb.showRestOverlay()
+        except Exception:
+            log.exception("qt.qml_shell.rest failed")
+
+    def _qml_invoke(method: str) -> None:
+        """调用 QML 根上的无参函数（托盘→打开设置/更新页等）。"""
+        root = qml_root_ref.get("value")
+        if root is None:
+            return
+        try:
+            QMetaObject.invokeMethod(root, method)
+        except Exception:
+            log.exception("qt.qml_shell.invoke %s failed", method)
 
     def _set_controller(ctrl) -> None:
         nonlocal controller
@@ -88,6 +113,23 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             raise RuntimeError("qt controller is not ready")
         return controller
 
+    def _refresh_dashboard() -> None:
+        """立即刷新主界面左右栏（导入数据后调用，避免等最多 10s 轮询才看到新数据）。
+
+        在 GUI 线程上调用（由 shellHost 槽触发的导入流程内），直接 refresh 两个数据桥即可。
+        主界面没开/桥未就绪时静默跳过。
+        """
+        bridges = _qml_refs.get("bridges") or {}
+        for key in ("leftPanelBridge", "rightPanelBridge"):
+            b = bridges.get(key)
+            if b is None:
+                continue
+            try:
+                b.refresh()
+            except Exception:
+                log.exception("qt.refresh_dashboard %s failed", key)
+        log.info("qt.refresh_dashboard done")
+
     def _main_window():
         current = main_window_ref.get("value")
         if current is None:
@@ -96,38 +138,26 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
 
     def _show_main_window() -> None:
         window = _main_window()
-        if window.isMinimized():
-            window.showNormal()
-        window.show()
-        window.raise_()
-        window.activateWindow()
-        # Hide any lingering modals after restore
         try:
-            window.page.runJavaScript("""
-                (function(){
-                  var ids=['closeWindowModal'];
-                  for(var i=0;i<ids.length;i++){
-                    var m=document.getElementById(ids[i]);
-                    if(m){m.style.removeProperty('display');m.classList.add('hidden');m.classList.remove('flex');}
-                  }
-                })();
-            """)
+            from PySide6.QtGui import QWindow as _QWindow
+            if window.visibility() == _QWindow.Minimized:
+                window.showNormal()
+        except Exception:
+            pass
+        window.show()
+        try:
+            window.raise_()
+        except Exception:
+            pass
+        try:
+            window.requestActivate()
         except Exception:
             pass
         log.info("qt.tray.show_main_window")
 
-    def _run_main_js(js: str, *, label: str) -> None:
-        try:
-            _show_main_window()
-            _main_window().page.runJavaScript(js)
-            log.info("qt.tray.main_js label=%s", label)
-        except Exception:
-            log.exception("qt tray main js failed label=%s", label)
-
     def _set_run_mode(mode: str) -> None:
         _controller().set_run_mode(mode)
         log.info("qt.tray.set_run_mode mode=%s", mode)
-        # Update tray icon badge immediately (not just when menu opens)
         tray = tray_ref.get("value")
         if tray is not None:
             try:
@@ -136,46 +166,15 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
                 pass
 
     def _open_settings() -> None:
-        _run_main_js(
-            """(function(){
-  try {
-    if (window.ui && typeof window.ui.openSettings === 'function') {
-      window.ui.openSettings();
-      return true;
-    }
-  } catch (e) {}
-  return false;
-})();""",
-            label="open_settings",
-        )
+        _show_main_window()
+        _qml_invoke("openSettings")
 
     def _start_rest_from_tray() -> None:
-        _run_main_js(
-            """(function(){
-  try {
-    if (window.ui && typeof window.ui.restStart === 'function') {
-      window.ui.restStart();
-      return true;
-    }
-  } catch (e) {}
-  return false;
-})();""",
-            label="rest_start",
-        )
+        _qml_start_rest()
 
     def _check_update_from_tray() -> None:
-        _run_main_js(
-            """(function(){
-  try {
-    if (window.ui && typeof window.ui.checkUpdate === 'function') {
-      window.ui.checkUpdate();
-      return true;
-    }
-  } catch (e) {}
-  return false;
-})();""",
-            label="check_update",
-        )
+        _show_main_window()
+        _qml_invoke("openUpdate")
 
     def _open_data_dir() -> None:
         os.startfile(str(data_dir))
@@ -183,25 +182,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
 
     def _quit_from_tray() -> None:
         log.info("qt.tray.quit_requested")
-        w = main_window_ref.get("value")
-        if w is not None:
-            w._is_quitting = True
-            # Fade out before shutdown (same as web modal quit)
-            _steps = [1.0, 0.8, 0.6, 0.4, 0.2, 0.0]
-            _idx = [0]
-            def _fade():
-                i = _idx[0]
-                if i >= len(_steps):
-                    _shutdown()
-                    app.quit()
-                    return
-                w.setWindowOpacity(_steps[i])
-                _idx[0] = i + 1
-                QTimer.singleShot(50, _fade)
-            _fade()
-        else:
-            _shutdown()
-            app.quit()
+        _shutdown()
+        app.quit()
 
     def _rest_duration_seconds() -> int:
         try:
@@ -215,12 +197,6 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
         except Exception:
             return 20
 
-    def _rest_overlay_url(screen_idx: int) -> str:
-        url = f"{build_ui_page_url(api_port=api_port, page='rest')}?screen={int(screen_idx)}"
-        if debug_console or os.environ.get("EYECARE_DEBUG_CONSOLE", "0") == "1":
-            url += "&debug=1"
-        return url
-
     def _notify_auto_hide_seconds() -> int:
         try:
             cfg = getattr(_controller(), "cfg", None)
@@ -231,7 +207,11 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             return 20
 
     def _play_rest_end_sound() -> dict:
-        sound_path = UI_WEB_DIR / "assets" / "rest_end_refresh_soft.wav"
+        cfg = getattr(controller, "cfg", None) if controller is not None else None
+        if cfg is not None and not bool(getattr(cfg, "rest_end_sound_enabled", True)):
+            log.info("qt.rest_end_sound skipped (disabled)")
+            return {"ok": False, "code": "disabled"}
+        sound_path = ASSETS_DIR / "rest_end_refresh_soft.wav"
         try:
             import winsound
         except Exception as exc:
@@ -251,6 +231,23 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             log.exception("qt.rest_end_sound unexpected error")
             return {"ok": False, "code": "unexpected_error", "error": str(exc), "path": str(sound_path)}
 
+    def _play_notify_sound() -> None:
+        """通知气泡提示音（gated by notify_sound_enabled）。"""
+        cfg = getattr(controller, "cfg", None) if controller is not None else None
+        if cfg is not None and not bool(getattr(cfg, "notify_sound_enabled", True)):
+            log.info("qt.notify_sound skipped (disabled)")
+            return
+        sound_path = ASSETS_DIR / "notify_bubble_softer.wav"
+        try:
+            import winsound
+            if not sound_path.exists():
+                log.warning("qt.notify_sound missing path=%s", sound_path)
+                return
+            winsound.PlaySound(str(sound_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+            log.info("qt.notify_sound_played path=%s", sound_path)
+        except Exception:
+            log.warning("qt.notify_sound failed", exc_info=True)
+
     def _try_show_pending_notify() -> dict:
         payload = notify_pending_payload.get("value")
         window = notify_window_ref.get("value")
@@ -269,6 +266,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
         window.active_extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
         window.show_notify(message=message, auto_hide_s=auto_hide_s)
         window.notify_active_session = session
+        _play_notify_sound()
         return {"ok": True, "reason": "shown", "session": session, "auto_hide_s": auto_hide_s}
 
     def _build_notify_message(extra: dict | None) -> str:
@@ -278,7 +276,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
         return message.strip() or "您已连续用眼较长时间，建议稍作休息"
 
     def _queue_notify_payload(*, extra: dict | None, prompt_key=None, debug_only: bool = False, message: str | None = None) -> dict:
-        session_seed = getattr(notify_window_ref.get("value"), "notify_active_session", 0) if notify_window_ref.get("value") is not None else 0
+        window = notify_window_ref.get("value")
+        session_seed = getattr(window, "notify_active_session", 0) if window is not None else 0
         session = int(session_seed or 0) + 1
         notify_pending_payload["value"] = {
             "message": str(message or _build_notify_message(extra)),
@@ -288,7 +287,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             "prompt_key": prompt_key,
             "debug_only": bool(debug_only),
         }
-        return {"ok": True, "session": session, "ready": bool(getattr(notify_window_ref.get("value"), "notify_ready", False) if notify_window_ref.get("value") is not None else False)}
+        return {"ok": True, "session": session, "ready": bool(getattr(window, "notify_ready", False) if window is not None else False)}
 
     def _show_ready_rest_overlays() -> None:
         shown = 0
@@ -302,368 +301,110 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             shown += 1
         log.info("qt.rest_overlay_show_ready shown=%s total=%s", shown, len(rest_overlays))
 
+    # ───────────────────────── 通知气泡（QML 原生） ─────────────────────────
+    class QmlNotifyAdapter:
+        """QML 原生 notify 浮层适配器（QML 同步加载，notify_ready 恒 True）。
 
-    start_backend_services(
-        data_dir=data_dir,
-        api_port=api_port,
-        app_controller_cls=AppController,
-        create_app_fn=create_app,
-        mount_ui_site_routes_fn=mount_ui_site_routes,
-        ui_web_dir=UI_WEB_DIR,
-        ui_index_path=UI_INDEX_PATH,
-        inject_bridge_script=inject_bridge_script,
-        inject_drag_region=inject_drag_region,
-        enable_drag_region_inject=ENABLE_DRAG_REGION_INJECT,
-        controller_ready=controller_ready,
-        flask_ready=flask_ready,
-        logger=log,
-        on_controller_started=_set_controller,
-    )
-    wait_flask_ready(api_port=api_port, flask_ready=flask_ready, timeout_s=2.0, logger=log)
+        actionTriggered("rest"/"snooze"/"dismiss") 走与原 notifyWindowAction
+        相同的业务链：_notify_complete + （rest 时）showRestOverlay。
+        """
 
-    class LoggingWebPage(QWebEnginePage):
-        def __init__(self, *, page_role: str) -> None:
-            super().__init__()
-            self._page_role = str(page_role or "page")
-
-        def javaScriptConsoleMessage(self, level, message, line_number, source_id):
-            level_name = getattr(level, "name", str(level))
-            log.info(
-                "qt.js_console role=%s level=%s line=%s source=%s message=%s",
-                self._page_role,
-                level_name,
-                int(line_number),
-                source_id or "",
-                message,
-            )
-
-    class RestOverlayWindow(QMainWindow):
-        def __init__(self, *, screen_idx: int, screen, bridge: QObject) -> None:
-            super().__init__()
-            self.screen_idx = int(screen_idx)
-            self.rest_ready = False
-            self.rest_started = False
-            self.setWindowTitle(f"EyE Care RestOverlay [{self.screen_idx}]")
-            self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
-            self.setAttribute(Qt.WA_TranslucentBackground, True)
-            self.setAttribute(Qt.WA_NoSystemBackground, True)
-            self.setAutoFillBackground(False)
-            self.setStyleSheet("background: transparent;")
-
-            geometry = screen.geometry()
-            self.setGeometry(geometry)
-            self.view = QWebEngineView(self)
-            self.view.setAttribute(Qt.WA_TranslucentBackground, True)
-            self.view.setAttribute(Qt.WA_NoSystemBackground, True)
-            self.view.setAutoFillBackground(False)
-            self.view.setStyleSheet("background: transparent; border: 0;")
-            self.page = LoggingWebPage(page_role=f"rest[{self.screen_idx}]")
-            self.page.setBackgroundColor(QColor(0, 0, 0, 0))
-            self.channel = QWebChannel(self.page)
-            self.channel.registerObject("qtBridge", bridge)
-            self.page.setWebChannel(self.channel)
-            self.view.setPage(self.page)
-            self.setCentralWidget(self.view)
-            self.centralWidget().setAttribute(Qt.WA_TranslucentBackground, True)
-            self.centralWidget().setAttribute(Qt.WA_NoSystemBackground, True)
-            self.centralWidget().setAutoFillBackground(False)
-            self.centralWidget().setStyleSheet("background: transparent; border: 0;")
-            self.view.loadFinished.connect(self._on_load_finished)
-            self.view.load(QUrl(_rest_overlay_url(self.screen_idx)))
-            log.info(
-                "qt.rest_overlay_created screen=%s x=%s y=%s w=%s h=%s",
-                self.screen_idx,
-                geometry.x(),
-                geometry.y(),
-                geometry.width(),
-                geometry.height(),
-            )
-            log.info("qt.rest_overlay_transparency_configured screen=%s page_bg=transparent widget_bg=transparent", self.screen_idx)
-
-        def _on_load_finished(self, ok: bool) -> None:
-            log.info(
-                "qt.rest_page_load_finished screen=%s ok=%s url=%s",
-                self.screen_idx,
-                bool(ok),
-                self.view.url().toString(),
-            )
-            if ok:
-                self.page.runJavaScript(rest_bridge_script)
-
-        def show_overlay(self, *, duration_s: int) -> None:
-            self.rest_started = True
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            try:
-                hwnd = int(self.winId())
-            except Exception:
-                hwnd = 0
-            acrylic_ok = False
-            if hwnd:
-                try:
-                    acrylic_ok = bool(win_effects.enable_acrylic(hwnd, tint_color=0x33101826, blur=True, where=f"qt_rest_show screen={self.screen_idx}"))
-                except Exception:
-                    log.exception("qt rest acrylic apply failed screen=%s hwnd=%s", self.screen_idx, hwnd)
-            log.info("qt.rest_overlay_acrylic screen=%s hwnd=%s ok=%s", self.screen_idx, hwnd, acrylic_ok)
-            js = f"""(function(){{
-  try {{ if (window.restFadeIn) window.restFadeIn(); }} catch (e) {{}}
-  try {{ window.__rest_end_sound_enabled = true; }} catch (e) {{}}
-  try {{ if (window.EyeCareRest && window.EyeCareRest.start) window.EyeCareRest.start({int(duration_s)}); }} catch (e) {{ console.error(e); }}
-  try {{ console.info('qt.rest_overlay_started screen={self.screen_idx} duration={int(duration_s)}'); }} catch (e) {{}}
-}})();"""
-            self.page.runJavaScript(js)
-            log.info("qt.rest_overlay_shown screen=%s duration_s=%s", self.screen_idx, int(duration_s))
-
-        def hide_overlay(self) -> None:
-            js = """(function(){
-  try { if (window.EyeCareRest && window.EyeCareRest.stop) window.EyeCareRest.stop(); } catch (e) {}
-  try { if (window.restFadeOut) window.restFadeOut(); } catch (e) {}
-})();"""
-            self.page.runJavaScript(js)
-            self.rest_started = False
-            # Delay hide to let fade-out CSS animation play (~300ms)
-            QTimer.singleShot(350, self._do_hide)
-            log.info("qt.rest_overlay_fade_out screen=%s", self.screen_idx)
-
-        def _do_hide(self) -> None:
-            self.hide()
-            log.info("qt.rest_overlay_hidden screen=%s", self.screen_idx)
-
-    rest_bridge_script = """
-(function() {
-  if (window.__EYECARE_QT_REST_BRIDGE_BOOTED__) return 'already-booted';
-  window.__EYECARE_QT_REST_BRIDGE_BOOTED__ = true;
-
-  function bootChannel() {
-    if (!(window.qt && window.qt.webChannelTransport)) return;
-    if (typeof window.QWebChannel !== 'function') return;
-    new window.QWebChannel(window.qt.webChannelTransport, function(channel) {
-      window.qtBridge = channel.objects.qtBridge || null;
-      window.__EYECARE_QT_CHANNEL_READY__ = !!window.qtBridge;
-      window.__EYECARE_QT_CALL__ = function(method, args) {
-        args = Array.isArray(args) ? args.slice() : [];
-        return new Promise(function(resolve, reject) {
-          var target = window.qtBridge;
-          if (!target || typeof target[method] !== 'function') {
-            reject(new Error('qt bridge method unavailable: ' + method));
-            return;
-          }
-          try {
-            target[method].apply(target, args.concat([function(result) { resolve(result); }]));
-          } catch (error) {
-            reject(error);
-          }
-        });
-      };
-      window.pywebview = window.pywebview || {};
-      window.pywebview.api = window.pywebview.api || {};
-      window.pywebview.api.rest_ready_for_show = function(screenIdx) {
-        return window.__EYECARE_QT_CALL__('restReadyForShow', [screenIdx]);
-      };
-      window.pywebview.api.close_rest_overlay = function() {
-        return window.__EYECARE_QT_CALL__('closeRestOverlay', []);
-      };
-      window.pywebview.api.play_rest_end_sound = function() {
-        return window.__EYECARE_QT_CALL__('playRestEndSound', []);
-      };
-      window.pywebview.api.rest_overlay_log = function(payload) {
-        return window.__EYECARE_QT_CALL__('restOverlayLog', [payload || {}]);
-      };
-      try {
-        var restLinks = Array.prototype.map.call(document.querySelectorAll('link[rel="stylesheet"]'), function(node) { return node.href || ''; });
-        var restScripts = Array.prototype.map.call(document.querySelectorAll('script[src]'), function(node) { return node.src || ''; });
-        console.info('qt.rest_static_probe=' + JSON.stringify({ href: window.location.href || '', links: restLinks, scripts: restScripts }));
-      } catch (e) {}
-      try { console.info('qt.rest_channel_ready=true'); } catch (e) {}
-      try {
-        var params = new URLSearchParams(window.location.search || '');
-        var screenIdx = parseInt(params.get('screen') || '0', 10);
-        window.pywebview.api.rest_ready_for_show(screenIdx).then(function(result) {
-          try { console.info('qt.rest_ready_ack=' + JSON.stringify(result || {})); } catch (e) {}
-        });
-      } catch (e) {
-        try { console.error(e); } catch (_) {}
-      }
-    });
-  }
-
-  if (typeof window.QWebChannel === 'function') {
-    bootChannel();
-    return 'channel-ready';
-  }
-
-  var script = document.createElement('script');
-  script.src = 'qrc:///qtwebchannel/qwebchannel.js';
-  script.onload = function() { bootChannel(); };
-  script.onerror = function() {
-    try { console.error('qt.rest_channel_script_load_failed'); } catch (e) {}
-  };
-  (document.head || document.documentElement).appendChild(script);
-  return 'channel-loading';
-})();
-"""
-
-    class NotifyOverlayWindow(QMainWindow):
-        def __init__(self, *, bridge: QObject) -> None:
-            super().__init__()
-            self.notify_ready = False
+        def __init__(self) -> None:
+            from ..qt_quick.notify_overlay import QmlNotifyOverlay
+            self.notify_ready = True
             self.notify_visible = False
             self.notify_active_session = 0
             self.active_prompt_key = None
             self.active_extra = {}
-            self.setWindowTitle("EyE Care Notify [qt]")
-            self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
-            self.setAttribute(Qt.WA_TranslucentBackground, True)
-            self.setAttribute(Qt.WA_NoSystemBackground, True)
-            self.setAutoFillBackground(False)
-            self.setStyleSheet("background: transparent;")
-
-            screen = QGuiApplication.primaryScreen()
-            geometry = screen.availableGeometry() if screen is not None else QGuiApplication.primaryScreen().geometry()
-            width, height = 400, 160
-            x = geometry.x() + max(0, geometry.width() - width - 24)
-            y = geometry.y() + max(0, geometry.height() - height - 24)
-            self.setGeometry(x, y, width, height)
-            self.view = QWebEngineView(self)
-            self.view.setAttribute(Qt.WA_TranslucentBackground, True)
-            self.view.setAttribute(Qt.WA_NoSystemBackground, True)
-            self.view.setAutoFillBackground(False)
-            self.view.setStyleSheet("background: transparent; border: 0;")
-            self.page = LoggingWebPage(page_role="notify")
-            self.page.setBackgroundColor(QColor(0, 0, 0, 0))
-            self.channel = QWebChannel(self.page)
-            self.channel.registerObject("qtBridge", bridge)
-            self.page.setWebChannel(self.channel)
-            self.view.setPage(self.page)
-            self.setCentralWidget(self.view)
-            self.centralWidget().setAttribute(Qt.WA_TranslucentBackground, True)
-            self.centralWidget().setAttribute(Qt.WA_NoSystemBackground, True)
-            self.centralWidget().setAutoFillBackground(False)
-            self.centralWidget().setStyleSheet("background: transparent; border: 0;")
-            self.view.loadFinished.connect(self._on_load_finished)
-            notify_html = render_qt_subpage_html(page_path=UI_WEB_DIR / "notify" / "index.html", ui_web_dir=UI_WEB_DIR)
-            self.view.setHtml(notify_html, QUrl(build_ui_page_url(api_port=api_port, page="notify")))
-            log.info("qt.notify_overlay_created x=%s y=%s w=%s h=%s", x, y, width, height)
-
-        def _on_load_finished(self, ok: bool) -> None:
-            log.info("qt.notify_page_load_finished ok=%s url=%s", bool(ok), self.view.url().toString())
-            if ok:
-                self.page.runJavaScript(notify_bridge_script)
+            self._overlay = QmlNotifyOverlay(on_action=self._on_action, win_effects=win_effects, log=log)
+            log.info("qt.qml_notify_overlay_created")
 
         def show_notify(self, *, message: str, auto_hide_s: int) -> None:
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            try:
-                hwnd = int(self.winId())
-            except Exception:
-                hwnd = 0
-            acrylic_ok = False
-            if hwnd:
-                try:
-                    acrylic_ok = bool(win_effects.enable_acrylic(hwnd, tint_color=0xBB101826, blur=True, where="qt_notify_show"))
-                except Exception:
-                    log.exception("qt notify acrylic apply failed hwnd=%s", hwnd)
-            log.info("qt.notify_overlay_acrylic hwnd=%s ok=%s", hwnd, acrylic_ok)
-            msg_json = json.dumps(str(message or ""), ensure_ascii=False)
-            js = f"""(function(){{
-  try {{ window.resetFade && window.resetFade(); }} catch (e) {{}}
-  try {{ window.setMessage && window.setMessage({msg_json}); }} catch (e) {{}}
-  try {{ window.notifyCardFadeIn && window.notifyCardFadeIn(); }} catch (e) {{}}
-  try {{ window.autoHide && window.autoHide({int(auto_hide_s)}); }} catch (e) {{}}
-  try {{ console.info('qt.notify_overlay_started autoHide={int(auto_hide_s)}'); }} catch (e) {{}}
-}})();"""
-            self.page.runJavaScript(js)
+            self._overlay.show_notify(message=message, auto_hide_s=int(auto_hide_s))
             self.notify_visible = True
-            log.info("qt.notify_overlay_shown auto_hide_s=%s", int(auto_hide_s))
 
         def hide_notify(self, *, reason: str = "dismiss") -> None:
-            self.page.runJavaScript("""(function(){ try { window.notifyCardFadeOut && window.notifyCardFadeOut(); } catch (e) {} })();""")
+            self._overlay.hide_notify(reason=reason)
             self.notify_visible = False
-            self.hide()
-            log.info("qt.notify_overlay_hidden reason=%s", reason)
 
-    notify_bridge_script = """
-(function() {
-  if (window.__EYECARE_QT_NOTIFY_BRIDGE_BOOTED__) return 'already-booted';
-  window.__EYECARE_QT_NOTIFY_BRIDGE_BOOTED__ = true;
+        def _on_action(self, name: str) -> None:
+            # QML 已自渐隐（_handle_action 内部会调 hide_notify），此处只走业务。
+            act = normalize_notify_window_action(name) or str(name or "")
+            prompt_key = self.active_prompt_key
+            extra = self.active_extra if isinstance(self.active_extra, dict) else {}
+            self.notify_visible = False
+            self.active_prompt_key = None
+            self.active_extra = {}
+            try:
+                _notify_complete(prompt_key, extra)
+            except Exception:
+                log.exception("qt.qml_notify_action notify_complete failed name=%s", name)
+            if act == "rest":
+                bridge = qt_bridge_ref.get("value")
+                if bridge is not None:
+                    try:
+                        bridge.showRestOverlay()
+                    except Exception:
+                        log.exception("qt.qml_notify_action showRestOverlay failed")
+            log.info("qt.qml_notify_action name=%s normalized=%s", name, act)
 
-  function bootChannel() {
-    if (!(window.qt && window.qt.webChannelTransport)) return;
-    if (typeof window.QWebChannel !== 'function') return;
-    new window.QWebChannel(window.qt.webChannelTransport, function(channel) {
-      window.qtBridge = channel.objects.qtBridge || null;
-      window.__EYECARE_QT_CHANNEL_READY__ = !!window.qtBridge;
-      window.__EYECARE_QT_CALL__ = function(method, args) {
-        args = Array.isArray(args) ? args.slice() : [];
-        return new Promise(function(resolve, reject) {
-          var target = window.qtBridge;
-          if (!target || typeof target[method] !== 'function') {
-            reject(new Error('qt bridge method unavailable: ' + method));
-            return;
-          }
-          try {
-            target[method].apply(target, args.concat([function(result) { resolve(result); }]));
-          } catch (error) {
-            reject(error);
-          }
-        });
-      };
-      window.pywebview = window.pywebview || {};
-      window.pywebview.api = window.pywebview.api || {};
-      window.pywebview.api.notify_log = function(payload) {
-        return window.__EYECARE_QT_CALL__('notifyLog', [payload || {}]);
-      };
-      window.pywebview.api.notify_ready_for_show = function() {
-        return window.__EYECARE_QT_CALL__('notifyReadyForShow', []);
-      };
-      window.pywebview.api.notify_window_action = function(action) {
-        return window.__EYECARE_QT_CALL__('notifyWindowAction', [action || '']);
-      };
-      window.pywebview.api.notify_action = window.pywebview.api.notify_window_action;
-      try {
-        var notifyLinks = Array.prototype.map.call(document.querySelectorAll('link[rel="stylesheet"]'), function(node) { return node.href || ''; });
-        var notifyScripts = Array.prototype.map.call(document.querySelectorAll('script[src]'), function(node) { return node.src || ''; });
-        console.info('qt.notify_static_probe=' + JSON.stringify({ href: window.location.href || '', links: notifyLinks, scripts: notifyScripts }));
-      } catch (e) {}
-      try { console.info('qt.notify_channel_ready=true'); } catch (e) {}
-    });
-  }
-
-  if (typeof window.QWebChannel === 'function') {
-    bootChannel();
-    return 'channel-ready';
-  }
-
-  var script = document.createElement('script');
-  script.src = 'qrc:///qtwebchannel/qwebchannel.js';
-  script.onload = function() { bootChannel(); };
-  script.onerror = function() {
-    try { console.error('qt.notify_channel_script_load_failed'); } catch (e) {}
-  };
-  (document.head || document.documentElement).appendChild(script);
-  return 'channel-loading';
-})();
-"""
-
-    def _ensure_notify_window(bridge: QObject):
+    def _ensure_notify_window(bridge: QObject = None):
         current = notify_window_ref.get("value")
         if current is not None:
             return current
-        current = NotifyOverlayWindow(bridge=bridge)
+        current = QmlNotifyAdapter()
         notify_window_ref["value"] = current
         return current
 
-    def _ensure_rest_overlays(bridge: QObject) -> None:
+    # ───────────────────────── 休息全屏遮罩（QML 原生） ─────────────────────────
+    def _qml_rest_finish(reason: str) -> None:
+        """rest 业务收尾：complete=倒计时到点，snooze=点「稍后」/Esc；随后关全部遮罩 + 释放守卫。"""
+        try:
+            if controller is not None:
+                if reason == "complete":
+                    controller.rest_complete()
+                else:
+                    controller.rest_snooze()
+        except Exception:
+            log.exception("qt.qml_rest_finish business failed reason=%s", reason)
+        rest_pending_show["value"] = False
+        for overlay in rest_overlays:
+            try:
+                if overlay.isVisible() or getattr(overlay, "rest_started", False):
+                    overlay.hide_overlay()
+            except Exception:
+                log.exception("qt.qml_rest_finish hide failed")
+        if controller is not None:
+            try:
+                controller.notify_rest_closed()
+            except Exception:
+                log.exception("qt.qml_rest_finish notify_rest_closed failed")
+        log.info("qt.qml_rest_finish reason=%s", reason)
+
+    def _on_qml_rest_complete() -> None:
+        _play_rest_end_sound()
+        _qml_rest_finish("complete")
+
+    def _on_qml_rest_snooze() -> None:
+        _qml_rest_finish("snooze")
+
+    def _ensure_rest_overlays(bridge: QObject = None) -> None:
         if rest_overlays:
             return
         screens = QGuiApplication.screens() or []
+        from ..qt_quick.rest_overlay import QmlRestOverlay
         for idx, screen in enumerate(screens):
-            overlay = RestOverlayWindow(screen_idx=idx, screen=screen, bridge=bridge)
-            rest_overlays.append(overlay)
+            rest_overlays.append(QmlRestOverlay(
+                screen_idx=idx,
+                screen=screen,
+                on_snooze=_on_qml_rest_snooze,
+                on_complete=_on_qml_rest_complete,
+                win_effects=win_effects,
+                log=log,
+            ))
         log.info("qt.rest_overlay_pool_ready count=%s", len(rest_overlays))
 
+    # ───────────────────────── 通知调度 ─────────────────────────
     class QtNotifyDispatcher(QObject):
         notifyShowRequested = Signal(object, object)
 
@@ -680,294 +421,30 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             log.exception("qt notify complete callback failed")
 
     def _handle_notify_task(extra: dict, prompt_key) -> None:
-        bridge = qt_bridge_ref.get("value")
-        window = notify_window_ref.get("value")
-        if window is None and bridge is not None:
-            window = _ensure_notify_window(bridge)
+        if notify_window_ref.get("value") is None:
+            _ensure_notify_window()
         result = _queue_notify_payload(extra=extra, prompt_key=prompt_key, debug_only=bool((extra or {}).get("debug_only")), message=None)
         shown = _try_show_pending_notify()
         log.info("qt.notify_task_queued prompt_key=%s queue_result=%s show_result=%s", prompt_key, result, shown)
 
-    qt_bridge_ref = {"value": None}
+    # ───────────────────────── 宿主桥（QML 直接调用，不依赖 web view） ─────────────────────────
+    class QtHostBridge(QObject):
+        """QML 外壳的宿主桥：文件导入导出 / 关闭动作 / 休息。
 
-    class QtBridgeProbe(QObject):
-        def __init__(self) -> None:
-            super().__init__()
-
-        @Slot(str, result="QVariantMap")
-        def ping(self, payload: str = "") -> dict:
-            data = {"ok": True, "payload": payload or "", "transport": "qwebchannel", "host": "qt"}
-            log.info("qt.bridge.ping payload=%s", payload or "")
-            return data
-
-        @Slot(str, str, str, result=bool)
-        def log(self, level: str, message: str, extra: str = "") -> bool:
-            log.info(
-                "qt.bridge.log level=%s message=%s extra=%s",
-                (level or "info").strip().lower(),
-                message or "",
-                extra or "",
-            )
-            return True
-
-        @Slot(result="QVariantMap")
-        def getRuntimeInfo(self) -> dict:
-            info = {
-                "host": "qt",
-                "transport": "qwebchannel",
-                "apiPort": int(api_port),
-                "controllerReady": bool(controller_ready.get("value")),
-                "flaskReady": bool(flask_ready.get("value")),
-            }
-            log.info("qt.bridge.runtime_info %s", info)
-            return info
-
-        @Slot("QVariantMap", result="QVariantMap")
-        def getSnapshot(self, query) -> dict:
-            if not isinstance(query, dict):
-                query = {}
-            log.info("qt.bridge.get_snapshot query=%s", query)
-            try:
-                return _services().snapshot.get_snapshot(query=query)
-            except Exception as exc:
-                log.exception("qt bridge getSnapshot failed")
-                return {"error": str(exc), "code": "bridge_error"}
-
-        @Slot(int, int, result="QVariantMap")
-        def getCalendarMonth(self, year: int, month: int) -> dict:
-            log.info("qt.bridge.get_calendar_month year=%s month=%s", int(year), int(month))
-            try:
-                return _services().stats.get_calendar_month(year=int(year), month=int(month))
-            except Exception as exc:
-                log.exception("qt bridge getCalendarMonth failed")
-                return {"error": str(exc), "code": "bridge_error", "days_with_data": []}
-
-        @Slot(result="QVariantMap")
-        def getConfig(self) -> dict:
-            log.info("qt.bridge.get_config")
-            try:
-                return _services().config.get_config()
-            except Exception as exc:
-                log.exception("qt bridge getConfig failed")
-                return {"error": str(exc), "code": "bridge_error", "config": {}}
-
-        @Slot("QVariantMap", result="QVariantMap")
-        def updateConfig(self, body) -> dict:
-            if not isinstance(body, dict):
-                body = {}
-            log.info("qt.bridge.update_config body=%s", body)
-            try:
-                return _services().config.update_config(body=body)
-            except Exception as exc:
-                log.exception("qt bridge updateConfig failed")
-                return {"error": str(exc), "code": "bridge_error"}
-
-        @Slot(str, result="QVariantMap")
-        def getIconDataUrl(self, app_short: str = "") -> dict:
-            app_short = str(app_short or "").strip()
-            log.info("qt.bridge.get_icon_data_url app_short=%s", app_short)
-            try:
-                return _services().config.get_icon(app_short=app_short)
-            except Exception as exc:
-                log.exception("qt bridge getIconDataUrl failed")
-                return {"error": str(exc), "code": "bridge_error", "app_short": app_short}
-
-        @Slot(result="QVariantMap")
-        def getCategoryNames(self) -> dict:
-            log.info("qt.bridge.get_category_names")
-            try:
-                return _services().config.get_category_names()
-            except Exception as exc:
-                log.exception("qt bridge getCategoryNames failed")
-                return {"error": str(exc), "code": "bridge_error", "ok": False}
-
-        @Slot(str, result="QVariantMap")
-        def deleteCategory(self, name: str = "") -> dict:
-            log.info("qt.bridge.delete_category name=%s", name)
-            try:
-                return _services().config.delete_category(name=name)
-            except Exception as exc:
-                if hasattr(exc, 'payload') and isinstance(exc.payload, dict) and exc.payload:
-                    return exc.payload
-                log.exception("qt bridge deleteCategory failed")
-                code = getattr(exc, 'code', 'bridge_error')
-                return {"error": str(exc), "code": code, "ok": False}
-
-        @Slot(result="QVariantMap")
-        def checkUpdate(self) -> dict:
-            log.info("qt.bridge.check_update")
-            try:
-                return _services().config.check_update()
-            except Exception as exc:
-                log.exception("qt bridge checkUpdate failed")
-                return {"error": str(exc), "code": "bridge_error", "ok": False}
-
-        @Slot(str, result="QVariantMap")
-        def openUrlAction(self, action: str = "") -> dict:
-            log.info("qt.bridge.open_url_action action=%s", action)
-            try:
-                return _services().config.open_url_action(action=action)
-            except Exception as exc:
-                if hasattr(exc, 'payload') and isinstance(exc.payload, dict) and exc.payload:
-                    return exc.payload
-                log.exception("qt bridge openUrlAction failed")
-                code = getattr(exc, 'code', 'bridge_error')
-                return {"error": str(exc), "code": code, "ok": False}
-
-        @Slot(bool, result="QVariantMap")
-        def setDnd(self, on: bool) -> dict:
-            log.info("qt.bridge.set_dnd on=%s", bool(on))
-            try:
-                result = _services().rest.set_dnd(on=bool(on))
-                # Update tray icon on DND toggle from web UI
-                mode = "dnd" if bool(on) else "normal"
-                tray = tray_ref.get("value")
-                if tray is not None:
-                    try:
-                        tray._set_mode_icon(mode)
-                    except Exception:
-                        pass
-                return result
-            except Exception as exc:
-                log.exception("qt bridge setDnd failed")
-                return {"error": str(exc), "code": "bridge_error", "dnd": bool(on)}
-
-        @Slot(result="QVariantMap")
-        def getAppsList(self) -> dict:
-            log.info("qt.bridge.get_apps_list")
-            try:
-                return _services().stats.get_apps_list()
-            except Exception as exc:
-                log.exception("qt bridge getAppsList failed")
-                return {"error": str(exc), "code": "bridge_error", "apps": []}
-
-        @Slot("QVariantMap", result="QVariantMap")
-        def getAppDetails(self, query) -> dict:
-            if not isinstance(query, dict):
-                query = {}
-            log.info("qt.bridge.get_app_details query=%s", query)
-            try:
-                return _services().stats.get_app_details(query=query)
-            except Exception as exc:
-                log.exception("qt bridge getAppDetails failed")
-                return {"error": str(exc), "code": "bridge_error"}
-
-        @Slot(result="QVariantMap")
-        def getBlacklist(self) -> dict:
-            log.info("qt.bridge.get_blacklist")
-            try:
-                return _services().stats.get_blacklist()
-            except Exception as exc:
-                log.exception("qt bridge getBlacklist failed")
-                return {"error": str(exc), "code": "bridge_error", "apps": []}
-
-        @Slot(str, result="QVariantMap")
-        def removeFromBlacklist(self, app_short: str = "") -> dict:
-            app_short = str(app_short or "").strip()
-            log.info("qt.bridge.remove_from_blacklist app_short=%s", app_short)
-            try:
-                return _services().stats.remove_from_blacklist(app_short=app_short)
-            except Exception as exc:
-                log.exception("qt bridge removeFromBlacklist failed")
-                return {"error": str(exc), "code": "bridge_error", "app_short": app_short}
-
-        @Slot("QVariantMap", result="QVariantMap")
-        def updateAppSettings(self, body) -> dict:
-            if not isinstance(body, dict):
-                body = {}
-            log.info("qt.bridge.update_app_settings body=%s", body)
-            try:
-                return _services().stats.update_app_settings(body=body)
-            except Exception as exc:
-                log.exception("qt bridge updateAppSettings failed")
-                return {"error": str(exc), "code": "bridge_error"}
-
-        @Slot(str, result="QVariantMap")
-        def excludeApp(self, app_short: str = "") -> dict:
-            app_short = str(app_short or "").strip()
-            log.info("qt.bridge.exclude_app app_short=%s", app_short)
-            try:
-                return _services().stats.exclude_app(app_short=app_short)
-            except Exception as exc:
-                log.exception("qt bridge excludeApp failed")
-                return {"error": str(exc), "code": "bridge_error", "app_short": app_short}
+        左右栏 + 设置 + 黑名单 + 应用 + 更新 + 日历各自有专用数据桥（eye_care.qt_quick.*），
+        这里只承载与桌面宿主强耦合、QML 无法自办的几件事。
+        """
 
         @Slot(result="QVariantMap")
         def startRest(self) -> dict:
             log.info("qt.bridge.start_rest")
             try:
-                result = _services().rest.start_rest(headers={}, remote_addr=None)
-                # 锁定后立即推送到前端，不等 10 秒轮询
-                if result.get("ok"):
-                    _run_main_js(
-                        "(function(){"
-                        "var btn=document.getElementById('startRestBtn');"
-                        "if(!btn)return;"
-                        "btn.disabled=true;"
-                        "btn.title='冷却中，2秒后可用';"
-                        "if(window.__restUnlockTimer)clearTimeout(window.__restUnlockTimer);"
-                        "window.__restUnlockTimer=setTimeout(function(){"
-                        "var b=document.getElementById('startRestBtn');"
-                        "if(b){b.disabled=false;b.title='';}"
-                        "window.__restUnlockTimer=null;"
-                        "},2000);"
-                        "})()",
-                        label="rest_lock_immediate",
-                    )
-                return result
+                return _services().rest.start_rest(headers={}, remote_addr=None)
             except Exception as exc:
                 if hasattr(exc, 'payload') and isinstance(exc.payload, dict) and exc.payload:
                     return exc.payload
                 log.exception("qt bridge startRest failed")
                 return {"error": str(exc), "code": "bridge_error", "ok": False}
-
-        @Slot(int, result="QVariantMap")
-        def restReadyForShow(self, screen_idx: int = 0) -> dict:
-            idx = int(screen_idx or 0)
-            for overlay in rest_overlays:
-                if overlay.screen_idx != idx:
-                    continue
-                overlay.rest_ready = True
-                log.info("qt.bridge.rest_ready_for_show screen=%s", idx)
-                if rest_pending_show.get("value") and not overlay.rest_started:
-                    overlay.show_overlay(duration_s=_rest_duration_seconds())
-                return {"ok": True, "screen": idx, "ready": True}
-            log.warning("qt.bridge.rest_ready_for_show missing_overlay screen=%s", idx)
-            return {"ok": False, "screen": idx, "code": "overlay_missing"}
-
-        @Slot(result="QVariantMap")
-        def closeRestOverlay(self) -> dict:
-            rest_pending_show["value"] = False
-            closed = 0
-            for overlay in rest_overlays:
-                if overlay.isVisible() or overlay.rest_started:
-                    overlay.hide_overlay()
-                    closed += 1
-            # Release rest entry guard so "立即休息" button can be clicked again
-            if controller is not None:
-                try:
-                    controller.notify_rest_closed()
-                except Exception:
-                    log.exception("qt bridge closeRestOverlay: notify_rest_closed failed")
-            log.info("qt.bridge.close_rest_overlay closed=%s", closed)
-            return {"ok": True, "closed": closed}
-
-        @Slot(result="QVariantMap")
-        def playRestEndSound(self) -> dict:
-            result = _play_rest_end_sound()
-            log.info("qt.bridge.play_rest_end_sound result=%s", result)
-            return result
-
-        @Slot("QVariantMap", result="QVariantMap")
-        def restOverlayLog(self, payload) -> dict:
-            if not isinstance(payload, dict):
-                payload = {}
-            try:
-                summary = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            except Exception:
-                summary = str(payload)
-            log.info("qt.bridge.rest_overlay_log payload=%s", summary[:500])
-            return {"ok": True}
 
         @Slot(result="QVariantMap")
         def showRestOverlay(self) -> dict:
@@ -983,229 +460,37 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
                 log.exception("qt bridge showRestOverlay failed")
                 return {"ok": False, "error": str(exc), "code": "bridge_error"}
 
-        @Slot(result="QVariantMap")
-        def notifyReadyForShow(self) -> dict:
-            try:
-                window = _ensure_notify_window(self)
-                window.notify_ready = True
-                result = _try_show_pending_notify()
-                log.info("qt.bridge.notify_ready_for_show result=%s", result)
-                return {"ok": True, "ready": True, "result": result}
-            except Exception as exc:
-                log.exception("qt bridge notifyReadyForShow failed")
-                return {"ok": False, "error": str(exc), "code": "bridge_error"}
-
-        @Slot(str, result="QVariantMap")
-        def notifyWindowAction(self, action: str = "") -> dict:
-            raw_action = str(action or "")
-            act = normalize_notify_window_action(raw_action)
-            log.info("qt.bridge.notify_window_action action=%s normalized=%s", raw_action, act)
-            if not act:
-                return {"ok": False, "code": "unknown_action", "action": raw_action}
-            try:
-                window = _ensure_notify_window(self)
-                prompt_key = getattr(window, "active_prompt_key", None)
-                extra = getattr(window, "active_extra", {}) if isinstance(getattr(window, "active_extra", {}), dict) else {}
-                window.hide_notify(reason=act)
-                _notify_complete(prompt_key, extra)
-                window.active_prompt_key = None
-                window.active_extra = {}
-                if act == "rest":
-                    rest_result = self.showRestOverlay()
-                    return {"ok": True, "action": act, "rest_overlay": rest_result}
-                return {"ok": True, "action": act}
-            except Exception as exc:
-                log.exception("qt bridge notifyWindowAction failed")
-                return {"ok": False, "error": str(exc), "code": "bridge_error", "action": act}
-
-        @Slot("QVariantMap", result="QVariantMap")
-        def notifyLog(self, payload) -> dict:
-            if not isinstance(payload, dict):
-                payload = {}
-            try:
-                summary = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            except Exception:
-                summary = str(payload)
-            stage = str(payload.get("stage") or "")
-            if stage and not getattr(_ensure_notify_window(self), "notify_ready", False):
-                notify_window_ref["value"].notify_ready = True
-                result = _try_show_pending_notify()
-                log.info("qt.bridge.notify_log marked_ready stage=%s result=%s", stage, result)
-            log.info("qt.bridge.notify_log payload=%s", summary[:500])
-            return {"ok": True}
-
-        @Slot(result="QVariantMap")
-        def showNotifyProbe(self) -> dict:
-            try:
-                window = _ensure_notify_window(self)
-                queued = _queue_notify_payload(extra={"debug_only": True}, prompt_key=None, debug_only=True, message="Qt notify probe")
-                notify_pending_payload["value"]["auto_hide_s"] = 2
-                result = _try_show_pending_notify()
-                log.info("qt.bridge.show_notify_probe session=%s result=%s", queued.get("session"), result)
-                return {"ok": True, "session": queued.get("session"), "result": result, "ready": bool(window.notify_ready)}
-            except Exception as exc:
-                log.exception("qt bridge showNotifyProbe failed")
-                return {"ok": False, "error": str(exc), "code": "bridge_error"}
-
-        @Slot(result="QVariantMap")
-        def triggerDebugNotify(self) -> dict:
-            try:
-                ctrl = _controller()
-                if hasattr(ctrl, "set_debug_notify"):
-                    ctrl.set_debug_notify(True)
-                if hasattr(ctrl, "debug_trigger_notify_show"):
-                    ctrl.debug_trigger_notify_show()
-                log.info("qt.bridge.trigger_debug_notify ok=True")
-                return {"ok": True}
-            except Exception as exc:
-                log.exception("qt bridge triggerDebugNotify failed")
-                return {"ok": False, "error": str(exc), "code": "bridge_error"}
-
-        @Slot(result="QVariantMap")
-        def triggerNaturalNotify(self) -> dict:
-            try:
-                ctrl = _controller()
-                manager = notification_manager_ref.get("value")
-                if manager is None:
-                    return {"ok": False, "code": "manager_unavailable"}
-                if hasattr(ctrl, "debug_force_rest_due"):
-                    ctrl.debug_force_rest_due()
-                _vm, extra = ctrl.snapshot_today(mark_prompted=False)
-                manager.on_snapshot(extra)
-                rest = (extra or {}).get("rest") or {}
-                log.info("qt.bridge.trigger_natural_notify rest=%s", rest)
-                return {
-                    "ok": True,
-                    "due": bool(rest.get("due")),
-                    "should_prompt": bool(rest.get("should_prompt")),
-                    "work_s": int(rest.get("work_s") or 0),
-                    "threshold_s": int(rest.get("threshold_s") or 0),
-                }
-            except Exception as exc:
-                log.exception("qt bridge triggerNaturalNotify failed")
-                return {"ok": False, "error": str(exc), "code": "bridge_error"}
-
-        @Slot(result=bool)
-        def closeWindow(self) -> bool:
-            log.info("qt.bridge.close_window")
-            try:
-                _main_window().close()
-                return True
-            except Exception:
-                log.exception("qt bridge closeWindow failed")
-                return False
-
-        @Slot(result=bool)
-        def minimizeWindow(self) -> bool:
-            log.info("qt.bridge.minimize_window")
-            try:
-                _main_window().showMinimized()
-                return True
-            except Exception:
-                log.exception("qt bridge minimizeWindow failed")
-                return False
-
-        @Slot(result="QVariantMap")
-        def maximizeToggle(self) -> dict:
-            """Maximize to current monitor only (not spanning dual-screen)."""
-            log.info("qt.bridge.maximize_toggle")
-            try:
-                w = _main_window()
-                if w._is_maximized:
-                    # Restore saved geometry
-                    geo = getattr(w, '_saved_geometry', None)
-                    if geo:
-                        w.setGeometry(geo)
-                    else:
-                        w.showNormal()
-                    w._is_maximized = False
-                else:
-                    # Save geometry for restore
-                    w._saved_geometry = QRect(w.x(), w.y(), w.width(), w.height())
-                    # Maximize to current monitor only
-                    screen = w.screen()
-                    if screen:
-                        w.setGeometry(screen.availableGeometry())
-                    else:
-                        w.showMaximized()
-                    w._is_maximized = True
-                return {"ok": True, "maximized": w._is_maximized}
-            except Exception:
-                log.exception("qt bridge maximizeToggle failed")
-                return {"ok": False, "maximized": False}
-
-        _drag_offset = None
-
-        @Slot(int, int, result=bool)
-        def startWindowDrag(self, global_x: int, global_y: int) -> bool:
-            try:
-                w = _main_window()
-                QtBridgeProbe._drag_offset = (global_x - w.x(), global_y - w.y())
-                return True
-            except Exception:
-                log.exception("qt bridge startWindowDrag failed")
-                return False
-
-        @Slot(int, int, result=bool)
-        def doWindowDrag(self, global_x: int, global_y: int) -> bool:
-            offset = QtBridgeProbe._drag_offset
-            if offset is None:
-                return False
-            try:
-                _main_window().move(global_x - offset[0], global_y - offset[1])
-                return True
-            except Exception:
-                log.exception("qt bridge doWindowDrag failed")
-                return False
-
-        @Slot(result=bool)
-        def endWindowDrag(self) -> bool:
-            QtBridgeProbe._drag_offset = None
-            return True
-
         @Slot(str, result=bool)
         def setCloseAction(self, action: str) -> bool:
-            """Save close action preference from web modal."""
+            """保存「关闭行为」偏好（关闭确认弹窗勾选"记住选择"）。
+
+            做三件事，缺一不可：
+              1) 写入 controller.cfg.close_action；
+              2) **立即落盘**（save_config）——下次启动也记住；
+              3) **同步设置页桥的内存 config**——否则同一次运行内 AppShell.requestClose() 读到的
+                 还是旧 close_action（settingsBridge.config 是内存缓存，不刷新就一直是"ask"），
+                 于是勾了记住、本次运行再点关闭仍弹确认（用户反馈：记不住）。
+            """
             try:
                 ctrl = controller
-                if ctrl is not None and hasattr(ctrl, "cfg"):
-                    ctrl.cfg.close_action = str(action or "ask")
-                    _save_config()
-                    log.info("qt.bridge.set_close_action action=%s", action)
+                if ctrl is None or not hasattr(ctrl, "cfg"):
+                    return False
+                val = str(action or "ask")
+                if val not in ("ask", "minimize", "quit"):
+                    val = "ask"
+                ctrl.cfg.close_action = val
+                _save_config()  # 立即落盘
+                # 同步设置页桥内存 config（_qml_refs["bridges"] 在装配完成后即就绪；用户交互远晚于此）
+                try:
+                    sb = (_qml_refs.get("bridges") or {}).get("settingsBridge")
+                    if sb is not None:
+                        sb.reload()
+                except Exception:
+                    log.exception("qt.bridge.set_close_action sync settings bridge failed")
+                log.info("qt.bridge.set_close_action action=%s saved+synced", val)
                 return True
             except Exception:
                 log.exception("qt bridge setCloseAction failed")
-                return False
-
-        @Slot(str, result=bool)
-        def closeWindowChoice(self, choice: str) -> bool:
-            """Handle user's close dialog choice from web modal."""
-            try:
-                c = str(choice or "minimize")
-                log.info("qt.bridge.close_window_choice choice=%s", c)
-                if c == "quit":
-                    log.info("qt.close_via_modal_quit")
-                    w = _main_window()
-                    w._is_quitting = True
-                    # Fade out before shutdown (reverse of startup fade-in)
-                    _steps = [1.0, 0.8, 0.6, 0.4, 0.2, 0.0]
-                    _idx = [0]
-                    def _fade():
-                        i = _idx[0]
-                        if i >= len(_steps):
-                            _shutdown()
-                            app.quit()
-                            return
-                        w.setWindowOpacity(_steps[i])
-                        _idx[0] = i + 1
-                        QTimer.singleShot(50, _fade)
-                    _fade()
-                else:
-                    _main_window().hide()
-                    log.info("qt.close_minimize_to_tray")
-                return True
-            except Exception:
-                log.exception("qt bridge closeWindowChoice failed")
                 return False
 
         @Slot(result="QVariantMap")
@@ -1252,6 +537,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
                     ctrl.repo.merge()
                 except Exception as merge_exc:
                     log.warning("qt importAll: repo.merge after import failed: %s", merge_exc)
+                _refresh_dashboard()  # 导入数据后立刻刷新主界面（若开着）
                 return {"status": "ok", "path": str(in_path), "result": res}
             except Exception as exc:
                 log.exception("qt bridge importAll failed")
@@ -1323,346 +609,20 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
                         set_launch_at_login(bool(new_cfg.startup_launch_at_login))
                     except Exception as launch_exc:
                         log.warning("qt importSettings: launch_at_login apply failed: %s", launch_exc)
+                # 导入设置会改黑名单/显示名/分类覆盖 → 主界面数据口径变；同步设置页内存 config 并刷新主界面
+                try:
+                    sb = (_qml_refs.get("bridges") or {}).get("settingsBridge")
+                    if sb is not None:
+                        sb.reload()
+                except Exception:
+                    log.exception("qt importSettings: sync settings bridge failed")
+                _refresh_dashboard()
                 return {"status": "ok", "path": str(in_path)}
             except Exception as exc:
                 log.exception("qt bridge importSettings failed")
                 return {"status": "error", "error": str(exc)}
 
-    probe_script = """
-(function() {
-  if (window.__EYECARE_QT_PROBE_BOOTED__) return 'already-booted';
-  window.__EYECARE_QT_PROBE_BOOTED__ = true;
-  window.__EYECARE_QT_CHANNEL_PROMISE__ = new Promise(function(resolve) {
-    window.__EYECARE_QT_CHANNEL_RESOLVE__ = resolve;
-  });
-
-  function logInfo(message) {
-    try { console.info(message); } catch (e) {}
-  }
-
-  function logError(message) {
-    try { console.error(message); } catch (e) {}
-  }
-
-  function bootChannel() {
-    if (!(window.qt && window.qt.webChannelTransport)) {
-      logError('qt.channel_transport_missing');
-      return;
-    }
-    if (typeof window.QWebChannel !== 'function') {
-      logError('qt.channel_constructor_missing');
-      return;
-    }
-    new window.QWebChannel(window.qt.webChannelTransport, function(channel) {
-      window.qtBridge = channel.objects.qtBridge || null;
-      window.__EYECARE_QT_CHANNEL_READY__ = !!window.qtBridge;
-      window.__EYECARE_QT_CALL__ = function(method, args) {
-        args = Array.isArray(args) ? args.slice() : [];
-        return new Promise(function(resolve, reject) {
-          var target = window.qtBridge;
-          if (!target || typeof target[method] !== 'function') {
-            reject(new Error('qt bridge method unavailable: ' + method));
-            return;
-          }
-          try {
-            target[method].apply(target, args.concat([function(result) { resolve(result); }]));
-          } catch (error) {
-            reject(error);
-          }
-        });
-      };
-      if (typeof window.__EYECARE_QT_CHANNEL_RESOLVE__ === 'function') {
-        window.__EYECARE_QT_CHANNEL_RESOLVE__(window.qtBridge);
-        window.__EYECARE_QT_CHANNEL_RESOLVE__ = null;
-      }
-      logInfo('qt.channel_ready=' + String(window.__EYECARE_QT_CHANNEL_READY__));
-
-      // Inject CSS for window control styling
-      (function() {
-        var s = document.createElement('style');
-        s.textContent = '#electronWindowControls .titlebar-btn{cursor:default !important}' +
-                        '#electronWindowControls .titlebar-btn:active{cursor:default !important}';
-        (document.head || document.documentElement).appendChild(s);
-      });
-
-      // 桥接就绪后立即显示窗控按钮
-      (function() {
-        var wrap = document.getElementById('electronWindowControls');
-        if (!wrap) return;
-        wrap.classList.remove('hidden');
-        var minBtn = document.getElementById('electronMinBtn');
-        var maxBtn = document.getElementById('electronMaxBtn');
-        var closeBtn = document.getElementById('electronCloseBtn');
-        if (minBtn) minBtn.addEventListener('click', function() { window.__EYECARE_QT_CALL__('minimizeWindow', []).catch(function(){}); });
-        if (maxBtn) maxBtn.addEventListener('click', function() { window.__EYECARE_QT_CALL__('maximizeToggle', []).catch(function(){}); });
-        if (closeBtn) closeBtn.addEventListener('click', function() { window.__EYECARE_QT_CALL__('closeWindow', []).catch(function(){}); });
-      })();
-
-      // Title bar drag: handle pywebview-drag-region (complements native WM_NCHITTEST)
-      (function() {
-        var dragging = false;
-        function onMouseDown(e) {
-          var el = e.target;
-          while (el) {
-            if (el.classList && el.classList.contains('pywebview-drag-region')) {
-              dragging = true;
-              window.__EYECARE_QT_CALL__('startWindowDrag', [e.screenX, e.screenY]).catch(function(){});
-              e.preventDefault();
-              return;
-            }
-            el = el.parentElement;
-          }
-        }
-        function onMouseMove(e) {
-          if (!dragging) return;
-          window.__EYECARE_QT_CALL__('doWindowDrag', [e.screenX, e.screenY]).catch(function(){});
-          e.preventDefault();
-        }
-        function onMouseUp() {
-          if (!dragging) return;
-          dragging = false;
-          window.__EYECARE_QT_CALL__('endWindowDrag', []).catch(function(){});
-        }
-        document.addEventListener('mousedown', onMouseDown, false);
-        document.addEventListener('mousemove', onMouseMove, false);
-        document.addEventListener('mouseup', onMouseUp, false);
-      })();
-
-      // Wire up close window modal buttons
-      (function() {
-        var modal = document.getElementById('closeWindowModal');
-        if (!modal) return;
-        function hide() { modal.style.removeProperty('display'); modal.classList.add('hidden'); modal.classList.remove('flex'); }
-        var closeBtn = document.getElementById('closeWindowClose');
-        if (closeBtn) closeBtn.addEventListener('click', hide);
-        var minimizeBtn = document.getElementById('closeWindowMinimize');
-        if (minimizeBtn) minimizeBtn.addEventListener('click', function() {
-          var cb = document.getElementById('closeWindowRemember');
-          if (cb && cb.checked) {
-            window.__EYECARE_QT_CALL__('setCloseAction', ['minimize']).catch(function(){});
-          }
-          window.__EYECARE_QT_CALL__('closeWindowChoice', ['minimize']).catch(function(){});
-          hide();
-        });
-        var quitBtn = document.getElementById('closeWindowQuit');
-        if (quitBtn) quitBtn.addEventListener('click', function() {
-          var cb = document.getElementById('closeWindowRemember');
-          if (cb && cb.checked) {
-            window.__EYECARE_QT_CALL__('setCloseAction', ['quit']).catch(function(){});
-          }
-          window.__EYECARE_QT_CALL__('closeWindowChoice', ['quit']).catch(function(){});
-          hide();
-        });
-      })();
-
-      try {
-        var mainLinks = Array.prototype.map.call(document.querySelectorAll('link[rel="stylesheet"]'), function(node) { return node.href || ''; });
-        var mainScripts = Array.prototype.map.call(document.querySelectorAll('script[src]'), function(node) { return node.src || ''; });
-        logInfo('qt.main_static_probe=' + JSON.stringify({ href: window.location.href || '', links: mainLinks, scripts: mainScripts }));
-      } catch (e) {}
-      if (!window.qtBridge) {
-        logError('qt.bridge_missing');
-        return;
-      }
-      window.qtBridge.getRuntimeInfo(function(info) {
-        logInfo('qt.runtime_info=' + JSON.stringify(info || {}));
-        window.qtBridge.ping('step4-probe', function(reply) {
-          logInfo('qt.ping_reply=' + JSON.stringify(reply || {}));
-          window.qtBridge.log('info', 'step4-probe', JSON.stringify(reply || {}), function(ack) {
-            logInfo('qt.log_ack=' + JSON.stringify(ack));
-            window.qtBridge.getConfig(function(configData) {
-              var cfg = (configData && configData.config) ? configData.config : {};
-              logInfo('qt.config_probe_keys=' + String(Object.keys(cfg).length));
-            });
-            window.qtBridge.getBlacklist(function(blacklistData) {
-              var apps = (blacklistData && blacklistData.apps) ? blacklistData.apps : [];
-              logInfo('qt.blacklist_probe_count=' + String(apps.length));
-            });
-            // Lazy-loaded: getCategoryNames, getAppsList, getIconDataUrl, getAppDetails,
-            // getCalendarMonth, checkUpdate — loaded on demand when user opens relevant UI
-            logInfo('qt.lazy_bridge_ready=true');
-          });
-        });
-      });
-    });
-  }
-
-  if (typeof window.QWebChannel === 'function') {
-    bootChannel();
-    return 'channel-ready';
-  }
-
-  var script = document.createElement('script');
-  script.src = 'qrc:///qtwebchannel/qwebchannel.js';
-  script.onload = function() { bootChannel(); };
-  script.onerror = function() {
-    if (typeof window.__EYECARE_QT_CHANNEL_RESOLVE__ === 'function') {
-      window.__EYECARE_QT_CHANNEL_RESOLVE__(null);
-      window.__EYECARE_QT_CHANNEL_RESOLVE__ = null;
-    }
-    logError('qt.channel_script_load_failed');
-  };
-  (document.head || document.documentElement).appendChild(script);
-  return 'channel-loading';
-})();
-"""
-
-    auto_quit_ms = int(os.environ.get("EYECARE_QT_AUTO_QUIT_MS", "0") or "0")
-
-    class MainWindow(QMainWindow):
-        def __init__(self) -> None:
-            super().__init__()
-            self.setWindowTitle("EyE Care")
-            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground, False)
-            self.setStyleSheet("QMainWindow{background:#070D19;border:none;}")
-            self.resize(1400, 860)
-            # Center on primary screen
-            from PySide6.QtGui import QGuiApplication
-            screen = QGuiApplication.primaryScreen()
-            if screen:
-                sg = screen.availableGeometry()
-                self.move((sg.width() - 1400) // 2, (sg.height() - 860) // 2)
-            # Pre-create HWND early so Qt has a stable handle before show()
-            self.winId()
-            self._title_hidden = False
-            self._is_maximized = False
-            self.view = QWebEngineView(self)
-            self.page = LoggingWebPage(page_role="main")
-            self.page.setBackgroundColor(QColor(7, 13, 25))
-            self.channel = QWebChannel(self.page)
-            self.bridge = QtBridgeProbe()
-            qt_bridge_ref["value"] = self.bridge
-            self.channel.registerObject("qtBridge", self.bridge)
-            self.page.setWebChannel(self.channel)
-            self.view.setPage(self.page)
-            self.setCentralWidget(self.view)
-            self.view.loadFinished.connect(self._on_load_finished)
-            main_html = render_main_html(
-                index_path=UI_INDEX_PATH,
-                inject_bridge_script=inject_bridge_script,
-                inject_drag_region=inject_drag_region,
-                enable_drag_region_inject=ENABLE_DRAG_REGION_INJECT,
-            )
-            self.view.setHtml(main_html, QUrl(build_ui_page_url(api_port=api_port, page="main")))
-
-        def _on_load_finished(self, ok: bool) -> None:
-            log.info("qt.main_page_load_finished ok=%s url=%s", bool(ok), self.view.url().toString())
-            if ok:
-                self.page.runJavaScript(probe_script)
-            if auto_quit_ms > 0:
-                QTimer.singleShot(auto_quit_ms, app.quit)
-
-        def showEvent(self, event):
-            """Hide title bar via DWM (no style change = no flicker).
-            
-            Uses DwmSetWindowAttribute to disable non-client area rendering
-            instead of SetWindowLongW(WS_CAPTION). This avoids SWP_FRAMECHANGED
-            cascading which was the cause of flicker.
-            opacity=0.0 is set externally in _fade_in_main_window before
-            show() is called, so the window is invisible during setup.
-            """
-            super().showEvent(event)
-            if getattr(self, '_title_hidden', False):
-                return
-            self._title_hidden = True
-            try:
-                import ctypes
-                hwnd = int(self.winId())
-                dwmapi = ctypes.windll.dwmapi
-                # DWMNCRP_DISABLED = 2: disable NC rendering, title bar invisible
-                val = ctypes.c_int(2)
-                dwmapi.DwmSetWindowAttribute(hwnd, 2, ctypes.byref(val), ctypes.sizeof(val))
-                # Dark mode title bar (when visible in system chrome)
-                val2 = ctypes.c_int(1)
-                dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val2), ctypes.sizeof(val2))
-                log.info("qt.title_bar_hidden_via_dwm")
-            except Exception:
-                log.exception("qt hide title bar via dwm failed")
-
-        def nativeEvent(self, event_type, message):
-            """Handle WM_NCHITTEST for frameless drag and resize regions."""
-            import ctypes
-            import ctypes.wintypes
-            if event_type == b"windows_generic_MSG":
-                try:
-                    msg = ctypes.wintypes.MSG.from_address(message.__int__())
-                    if msg.message == 0x0084:
-                        x = msg.lParam & 0xFFFF
-                        y = (msg.lParam >> 16) & 0xFFFF
-                        if x & 0x8000: x |= -0x10000
-                        if y & 0x8000: y |= -0x10000
-                        pt = ctypes.wintypes.POINT(x, y)
-                        user32 = ctypes.windll.user32
-                        user32.ScreenToClient(msg.hWnd, ctypes.byref(pt))
-                        rect = ctypes.wintypes.RECT()
-                        user32.GetClientRect(msg.hWnd, ctypes.byref(rect))
-                        w = max(0, int(rect.right - rect.left))
-                        h = max(0, int(rect.bottom - rect.top))
-                        dpr = max(1.0, float(self.devicePixelRatioF()))
-                        grip = max(6, int(round(6 * dpr)))
-                        title_height = max(32, int(round(36 * dpr)))
-                        control_width = int(round(150 * dpr))
-                        left = pt.x < grip
-                        right = pt.x >= max(0, w - grip)
-                        top = pt.y < grip
-                        bottom = pt.y >= max(0, h - grip)
-                        if top and left:
-                            return True, 13  # HTTOPLEFT
-                        if top and right:
-                            return True, 14  # HTTOPRIGHT
-                        if bottom and left:
-                            return True, 16  # HTBOTTOMLEFT
-                        if bottom and right:
-                            return True, 17  # HTBOTTOMRIGHT
-                        if left:
-                            return True, 10  # HTLEFT
-                        if right:
-                            return True, 11  # HTRIGHT
-                        if top:
-                            return True, 12  # HTTOP
-                        if bottom:
-                            return True, 15  # HTBOTTOM
-                        if 0 <= pt.y < title_height and pt.x >= max(0, w - control_width):
-                            return True, 1  # HTCLIENT: let web titlebar buttons receive clicks
-                        if 0 <= pt.y < title_height:
-                            return True, 2  # HTCAPTION
-                except Exception:
-                    pass
-            return super().nativeEvent(event_type, message)
-
-        def closeEvent(self, event):
-            """Always ignore close — web modal handles the decision asynchronously.
-            
-            During tray-initiated quit (_is_quitting=True), accept immediately.
-            """
-            if getattr(self, '_is_quitting', False):
-                event.accept()
-                return
-            event.ignore()
-            cfg = getattr(controller, "cfg", None) if controller is not None else None
-            if cfg is not None:
-                action = getattr(cfg, "close_action", "ask")
-                if action == "minimize":
-                    QTimer.singleShot(0, self.hide)
-                    log.info("qt.close_minimize_to_tray")
-                    return
-                if action == "quit":
-                    QTimer.singleShot(0, _quit_from_tray)
-                    return
-            # Show web modal
-            self.page.runJavaScript("""
-                (function(){
-                  var m=document.getElementById('closeWindowModal');
-                  if(!m)return;
-                  m.style.setProperty('display','flex','important');
-                  m.classList.remove('hidden');
-                  m.classList.add('flex');
-                  var cb=document.getElementById('closeWindowRemember');
-                  if(cb)cb.checked=false;
-                })();
-            """)
-
+    # ───────────────────────── 托盘 ─────────────────────────
     class QtTrayController(QObject):
         def __init__(self) -> None:
             super().__init__()
@@ -1724,7 +684,6 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             self.actions["mode_normal"].setChecked(mode == "normal")
             self.actions["mode_dnd"].setChecked(mode == "dnd")
             self.actions["mode_leave"].setChecked(mode == "leave")
-            # Update tray icon overlay based on mode
             try:
                 self._set_mode_icon(mode)
             except Exception:
@@ -1773,18 +732,99 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
             except Exception:
                 log.exception("qt tray stop failed")
 
-        def run_probe(self) -> None:
-            log.info("qt.tray.probe_start")
-            QTimer.singleShot(500, lambda: self.actions["show_main"].trigger())
-            QTimer.singleShot(900, lambda: self.actions["mode_dnd"].trigger())
-            QTimer.singleShot(1300, lambda: self.actions["mode_normal"].trigger())
-            QTimer.singleShot(1700, lambda: self.actions["rest_start"].trigger())
-            QTimer.singleShot(2200, lambda: self.actions["open_settings"].trigger())
-            QTimer.singleShot(2700, lambda: self.actions["check_update"].trigger())
-            if os.environ.get("EYECARE_QT_TRAY_PROBE_QUIT", "0") == "1":
-                QTimer.singleShot(3400, lambda: self.actions["quit"].trigger())
+    def _apply_app_font() -> None:
+        """统一应用字体，避免在日文/英文系统上因缺中文 UI 字体而 per-glyph 回退（字重不一/发虚）。
 
+        QML 各处只设 pixelSize/weight、不指定 family → 继承应用默认字体。Windows 默认字体
+        （Segoe UI / MS Shell Dlg）不含中文字形，渲染中文时按字形回退到不同字体，导致用户在
+        日语系统上看到"字体变细、粗细不一"。这里显式选一个全 Windows 都自带的 CJK UI 字体，
+        让所有语言环境下渲染一致。
+        """
+        try:
+            from PySide6.QtGui import QFont, QFontDatabase
+            candidates = ["Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑",
+                          "Yu Gothic UI", "Meiryo", "Segoe UI"]
+            try:
+                families = set(QFontDatabase.families())
+            except Exception:
+                families = set()
+            chosen = next((f for f in candidates if f in families), candidates[0])
+            font = QFont(chosen)
+            font.setStyleStrategy(QFont.PreferAntialias)
+            app.setFont(font)
+            log.info("qt.app_font family=%s available=%s", chosen, chosen in families)
+        except Exception:
+            log.exception("qt.app_font setup failed")
+
+    # ───────────────────────── 启动序列 ─────────────────────────
     app = QApplication.instance() or QApplication([sys.argv[0]])
+    _apply_app_font()
+
+    # ── 单实例检测（QLocalServer/QLocalSocket，Qt 原生 IPC）──────
+    # 第二个实例启动时：连上第一个实例发送 ACTIVATE、退出。
+    # 第一个实例收到连接：调 _show_main_window() 把窗口拉到前台。
+    _si_server = None
+    _si_pending_activate = {"value": False}   # 窗口尚未就绪时收到激活请求的暂存标志
+
+    if not no_single:
+        try:
+            from PySide6.QtNetwork import QLocalServer, QLocalSocket
+            _SI_NAME = "EyECare_App_SingleInstance_v1"
+
+            # 先探测：能连上说明已有实例在运行
+            _probe = QLocalSocket()
+            _probe.connectToServer(_SI_NAME)
+            if _probe.waitForConnected(400):
+                _probe.write(b"ACTIVATE\n")
+                _probe.waitForBytesWritten(1000)
+                _probe.disconnectFromServer()
+                log.info("qt.single_instance: 检测到已运行实例，已发送激活信号，本次退出。")
+                # 不能直接 return——QApplication 必须先 exec() 才能正常退出；
+                # 用 processEvents 冲掉待处理事件后直接返回。
+                app.processEvents()
+                return
+            _probe.deleteLater()
+
+            # 成为主实例：创建服务端
+            QLocalServer.removeServer(_SI_NAME)   # 清理上次崩溃留下的过期 socket
+            _si_server = QLocalServer()
+            if _si_server.listen(_SI_NAME):
+                def _on_si_connection():
+                    try:
+                        client = _si_server.nextPendingConnection()
+                        if client:
+                            client.waitForReadyRead(400)
+                            client.disconnectFromServer()
+                    except Exception:
+                        pass
+                    if main_window_ref.get("value") is not None:
+                        _show_main_window()
+                    else:
+                        _si_pending_activate["value"] = True
+                _si_server.newConnection.connect(_on_si_connection)
+                log.info("qt.single_instance: 主实例就绪，监听 %s", _SI_NAME)
+            else:
+                log.warning("qt.single_instance: 服务端监听失败(%s)，放行多实例",
+                            _si_server.errorString())
+                _si_server.deleteLater()
+                _si_server = None
+        except ImportError:
+            log.warning("qt.single_instance: PySide6.QtNetwork 不可用，跳过单实例检测")
+        except Exception:
+            log.exception("qt.single_instance: 初始化失败，跳过单实例检测")
+
+    # controller 同步创建（QML 外壳需要它；start() 自带后台线程，很快返回）
+    diag.emit("DIAG_CONTROLLER_INIT", log, "初始化Controller")
+    controller = AppController(data_dir=data_dir)
+    controller.state.is_dnd = bool(getattr(controller.cfg, "startup_dnd", False))
+    try:
+        from eye_care.diagnostics.debug_switch import is_debug_enabled
+        is_debug_enabled(config_enabled=getattr(controller.cfg, "debug_enabled", False))
+    except Exception as e:
+        log.debug("debug_switch init skipped: %s", e)
+    controller.start()
+    _set_controller(controller)
+    diag.emit("DIAG_CONTROLLER_READY", log, "Controller就绪")
 
     from eye_care.notify.notification_manager import NotificationManager
     from eye_care.notify.notifier_service import NotifierService
@@ -1837,44 +877,161 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int, debug_console: 
     except Exception:
         log.exception("qt notifier_service start failed")
 
-    window = MainWindow()
-    main_window_ref["value"] = window
-    # 暂不显示窗口——等页面加载 + 桥接就绪后再渐显
-    # 窗口本身已创建好，setHtml + probe_script 在 MainWindow.__init__ 中完成
+    def _create_qml_shell():
+        """构建 QML AppShell 主窗，并装配全部数据桥（persist=True 真落盘）。"""
+        from PySide6.QtQml import QQmlApplicationEngine, QQmlEngine
+        from datetime import date as _date
+        from eye_care.qt_quick.shell_integration import build_shell_bridges, CONTEXT_PROPERTY_NAMES
 
-    def _fade_in_main_window():
-        w = main_window_ref.get("value")
-        if w is None:
-            return
-        w.setWindowOpacity(0.0)
-        w.show()
-        # 使用 30 步 * 18ms ≈ 540ms 渐显，QTimer 链保持引用不被 GC
-        _steps = 30
-        _step = [0]
+        qml_path = PROJECT_ROOT / "eye_care" / "qt_quick" / "qml" / "AppShell.qml"
+        bridges = build_shell_bridges(controller, persist=True, log=log, today=_date.today().isoformat())
 
-        def _tick():
-            i = _step[0]
-            i += 1
-            _step[0] = i
-            # ease-out cubic: t^3
-            t = i / _steps
-            eased = t * t * t
-            w.setWindowOpacity(min(eased, 1.0))
-            if i < _steps:
-                QTimer.singleShot(18, _tick)
+        host_bridge = QtHostBridge()
+        qt_bridge_ref["value"] = host_bridge
+        _qml_refs["host_bridge"] = host_bridge
 
-        _tick()
-        log.info("qt.main_window_fade_in")
+        def _on_toolbar_action(name):
+            n = str(name or "")
+            try:
+                if n == "exportAll":
+                    host_bridge.exportAll()
+                elif n == "exportSettings":
+                    host_bridge.exportSettings()
+                elif n == "importAll":
+                    host_bridge.importAll()
+                elif n == "importSettings":
+                    host_bridge.importSettings()
+                elif n.startswith("closeAction:"):
+                    host_bridge.setCloseAction(n.split(":", 1)[1])
+                else:
+                    log.info("qt.qml_shell.toolbar_action_unhandled name=%s", n)
+            except Exception:
+                log.exception("qt.qml_shell toolbar action failed name=%s", n)
 
-    # 等页面加载 + 桥接准备就绪（~1.2s）后再渐显
-    QTimer.singleShot(1200, _fade_in_main_window)
+        # shellHost：QML 直接调用的宿主桥（比 Python 连 QML 信号更可靠）。必须在 load 前 setContextProperty。
+        class _ShellHost(QObject):
+            @Slot(str)
+            def doToolbarAction(self, name: str) -> None:
+                _on_toolbar_action(name)
+
+            @Slot()
+            def requestRest(self) -> None:
+                log.info("qt.qml_shell.shellHost.requestRest")
+                _qml_start_rest()
+
+            @Slot()
+            def quitApp(self) -> None:
+                log.info("qt.qml_shell.shellHost.quitApp")
+                _quit_from_tray()
+
+            @Slot()
+            def demoNotify(self) -> None:
+                """引导演示：直接弹出通知气泡，不走正常业务链。"""
+                log.info("qt.qml_shell.shellHost.demoNotify")
+                try:
+                    # 首次调用时 notify 窗口尚未创建，需先初始化
+                    if notify_window_ref.get("value") is None:
+                        _ensure_notify_window(self)
+                    _queue_notify_payload(message="示例：用眼提醒已到，建议稍作休息", extra={})
+                    result = _try_show_pending_notify()
+                    log.info("qt.qml_shell.shellHost.demoNotify result=%s", result)
+                except Exception:
+                    log.exception("qt.qml_shell shellHost.demoNotify failed")
+
+            @Slot()
+            def demoRest(self) -> None:
+                """引导演示：直接显示休息倒计时界面，不通过业务守卫。"""
+                log.info("qt.qml_shell.shellHost.demoRest")
+                try:
+                    _ensure_rest_overlays(self)
+                    rest_pending_show["value"] = True
+                    _show_ready_rest_overlays()
+                except Exception:
+                    log.exception("qt.qml_shell shellHost.demoRest failed")
+        shell_host = _ShellHost()
+
+        engine = QQmlApplicationEngine()
+        # 显式声明 C++/Python 所有权，防止 QML 的 JS GC 误回收这些桥对象。
+        for _b in list(bridges.values()) + [shell_host, host_bridge]:
+            try:
+                if isinstance(_b, QObject):
+                    QQmlEngine.setObjectOwnership(_b, QQmlEngine.CppOwnership)
+            except Exception:
+                pass
+        ctx = engine.rootContext()
+        for name in CONTEXT_PROPERTY_NAMES:
+            ctx.setContextProperty(name, bridges[name])
+        ctx.setContextProperty("shellHost", shell_host)
+        engine.load(QUrl.fromLocalFile(str(qml_path)))
+        roots = engine.rootObjects()
+        if not roots:
+            raise RuntimeError("AppShell.qml 加载失败（rootObjects 空）")
+        root = roots[0]
+        qml_root_ref["value"] = root
+        main_window_ref["value"] = root
+        try:
+            from eye_care.version import APP_VERSION
+            root.setProperty("appVersion", ("v" + APP_VERSION) if APP_VERSION else "")
+        except Exception:
+            pass
+
+        # 信号兜底（运行时 QML 优先 shellHost，不会重复触发）
+        try:
+            root.toolbarAction.connect(_on_toolbar_action)
+            root.restRequested.connect(_qml_start_rest)
+        except Exception:
+            pass
+
+        # 托盘应用：关最后一个窗口（休息覆盖层关闭 / 主窗最小化）不退进程；退出统一走 shellHost/托盘。
+        app.setQuitOnLastWindowClosed(False)
+
+        # 通知开关实时联动：设置页改 notify_enabled → 起/停 NotifierService。
+        _qml_refs["notifier_running"] = bool(getattr(getattr(controller, "cfg", None), "notify_enabled", True))
+
+        def _reconcile_notifier():
+            try:
+                want = bool(getattr(getattr(controller, "cfg", None), "notify_enabled", True))
+                svc = notifier_service_ref.get("value")
+                if svc is None:
+                    return
+                running = bool(_qml_refs.get("notifier_running"))
+                if want and not running:
+                    svc.start()
+                    _qml_refs["notifier_running"] = True
+                    log.info("qt.qml_shell.notifier started (settings toggle)")
+                elif not want and running:
+                    svc.stop(timeout_s=2.0)
+                    _qml_refs["notifier_running"] = False
+                    log.info("qt.qml_shell.notifier stopped (settings toggle)")
+            except Exception:
+                log.exception("qt.qml_shell.notifier reconcile failed")
+        try:
+            bridges["settingsBridge"].configChanged.connect(_reconcile_notifier)
+        except Exception:
+            pass
+
+        # 10s 轮询刷新左右栏
+        poll = QTimer()
+        poll.setInterval(10000)
+        poll.timeout.connect(lambda: (bridges["leftPanelBridge"].refresh(), bridges["rightPanelBridge"].refresh()))
+        poll.start()
+
+        _qml_refs.update({"engine": engine, "bridges": bridges, "host_bridge": host_bridge,
+                          "poll": poll, "shell_host": shell_host})
+        log.info("qt.qml_shell: AppShell 已装配并显示（persist=True）")
+        return root
+
+    _create_qml_shell()
+
+    # 窗口就绪：处理在 QML 创建前就收到的激活请求（极少见，保险起见）
+    if _si_pending_activate.get("value"):
+        _si_pending_activate["value"] = False
+        _show_main_window()
 
     tray = QtTrayController()
     tray_ref["value"] = tray
     tray_started = tray.start()
     log.info("qt.tray.start_result ok=%s", tray_started)
-    if tray_started and os.environ.get("EYECARE_QT_TRAY_PROBE", "0") == "1":
-        tray.run_probe()
 
     def _shutdown() -> None:
         tray = tray_ref.get("value")

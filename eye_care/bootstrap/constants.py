@@ -16,14 +16,8 @@ else:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     _BUNDLE_ROOT = PROJECT_ROOT
 
-UI_WEB_DIR = _BUNDLE_ROOT / "eye_care" / "ui" / "web"
-UI_INDEX_PATH = UI_WEB_DIR / "index.html"
+# 声音等静态资源目录（QML 迁移后，原 ui/web 已退役，资源迁至 eye_care/assets）
+ASSETS_DIR = _BUNDLE_ROOT / "eye_care" / "assets"
 
-# 默认端口：本地 API 使用 17993
+# 默认端口：保留常量供 main.py 的 --no-ui --api-port 头less 模式参考（GUI 已不再用 Flask）
 DEFAULT_API_PORT = 17993
-
-HEALTH_POLL_MS = 50  # 从300ms降到50ms，更快响应
-HEALTH_TIMEOUT_MS = 3000  # 从15秒降到3秒，Flask启动通常<1秒
-
-# 拖拽区域注入：默认关闭(UI 已在 HTML/CSS 标注)
-ENABLE_DRAG_REGION_INJECT = False
