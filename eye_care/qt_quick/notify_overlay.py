@@ -70,6 +70,16 @@ class QmlNotifyOverlay:
     # ---- 对外 API ----
     def show_notify(self, *, message: str, auto_hide_s: int = 20) -> None:
         """显示浮层并渐入；auto_hide_s 秒后若未操作则自动以 dismiss 隐藏。"""
+        # 每次弹出前重新定位到鼠标所在屏幕，适配多显示器切换场景
+        try:
+            from PySide6.QtGui import QGuiApplication, QCursor
+            screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+            if screen is not None:
+                geo = screen.availableGeometry()
+                self._win.setX(geo.x() + max(0, geo.width() - self.WIDTH - self.MARGIN))
+                self._win.setY(geo.y() + max(0, geo.height() - self.HEIGHT - self.MARGIN))
+        except Exception:
+            pass
         self._win.setProperty("messageText", str(message or ""))
         self._win.setProperty("cardVisible", False)  # 先归零，保证 Behavior 渐入
         self._win.setVisible(True)

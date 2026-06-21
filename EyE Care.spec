@@ -20,10 +20,11 @@ a = Analysis(
         ('icon.ico', '.'),
         ('icon.png', '.'),
         ('README.md', '.'),
-        ('docs/使用手册.md', 'docs'),   # 仅面向用户的手册，不带开发文档
-        # 注：version_info.txt 不在此——它是构建期输入（下方 EXE(version=...) 嵌进 exe 属性），非运行期资源。
+        # Note: version_info.txt is a build-time input (EXE version= below), not a runtime asset.
+        # Note: user manual (Chinese filename) is excluded to avoid encoding issues on non-CJK build hosts.
     ],
     hiddenimports=[
+        'yaml',          # PyYAML -- imported inside function body, may not be auto-detected
         'PIL',
         'PIL.Image',
         'PySide6',
