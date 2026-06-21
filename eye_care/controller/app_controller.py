@@ -594,6 +594,7 @@ class AppController:
                 self._rest_due = False
                 self._rest_notified = False
                 self._rest_snooze_until = 0.0
+                self._rest_next_prompt_work_s = 0
 
         # 调用通知配置变更回调（如果已注册）
         if hasattr(self, "_notify_config_callback") and callable(self._notify_config_callback):
@@ -977,6 +978,12 @@ class AppController:
                     # DEPRECATED: is_paused 已废弃，删除恢复分支
                     # self.state.is_paused = prev == "paused"  # 已删除
                     self.state.force_idle = prev == "leave"
+                    # 自动勿扰结束：若休息提醒已到，清除"已通知/下次提醒工作量"，允许立即重新提醒。
+                    # 不清除 _rest_snooze_until，以尊重用户在休息遮罩中点"稍后"的明确选择。
+                    with self._lock:
+                        if self._rest_due:
+                            self._rest_notified = False
+                            self._rest_next_prompt_work_s = 0
                     self._emit_event(name="mode_set", payload={"mode": prev, "reason": "auto_app_leave"})
 
                 if not self.state.is_paused and not self.state.force_idle and not self.state.auto_idle:
