@@ -526,6 +526,24 @@ GC 滞后**；RSS 会周期性断崖回落到 ~200-400MB（非无限漏，但峰
     - **README 重写**：原内容描述 web/Flask/pywebview/`--host legacy`/已删 tests，全过时 → 按 QML-only 现状重写(结构/参数/打包)。
     - 根目录现状(整洁)：`CLAUDE.md docs/ eye_care/ EyE Care.spec icon.ico icon.png main.py README.md requirements.txt scripts/ user_data/ version_info.txt`。
 
+### 功能新增
+#### 全屏勿扰 + notify 置顶修复（2026-06-24，用户主诉）
+- **notify 气泡被遮**：`NotifyOverlay.qml` 本就有 `Qt.WindowStaysOnTopHint`，但它只压普通窗口；同处 topmost band
+  的另一个置顶窗口（无边框全屏应用 / 别家置顶提示）可能排在其上。修：`notify_overlay.py` 新增 `_raise_topmost()`——
+  每次 `show_notify` 弹出时先 `raise_()` 再 Win32 `SetWindowPos(HWND_TOPMOST, …, SWP_NOACTIVATE)` 重新抢占 band 顶部，
+  `NOACTIVATE` 不抢焦点。失败静默降级（非 Windows 不受影响）。**DirectX 独占全屏游戏**合成器层盖一切 topmost——靠下面的全屏勿扰直接不弹兜底。
+- **全屏勿扰**：沿用既有「M4 自动勿扰（指定 app 前台→勿扰）」范式新增一条平行触发（`dnd_reason="auto_fullscreen"`）。
+  - 检测：`probes/win_fullscreen.py`（+ 跨平台入口 `probes/fullscreen.py`，非 Win 恒 False）——前台窗口矩形完整覆盖所在显示器
+    (rcMonitor，含任务栏)即判全屏。**排除**桌面/Shell 类名(Progman/WorkerW/Shell_TrayWnd 等) + **本进程自身窗口**(休息全屏遮罩/
+    最大化主窗，按 pid==os.getpid())。「最大化≠全屏」(最大化尊重 rcWork、不盖任务栏)。
+  - 控制器：`app_controller._tick_loop` 在 M4 块后加 `auto_fullscreen` 块——进全屏→进勿扰(记进入前模式)，退全屏/关开关→恢复。
+    **只管自身 reason**，手动勿扰(reason=manual)/app 自动勿扰(先行、优先)互不干扰；退出时若休息已到清 `_rest_notified`/
+    `_rest_next_prompt_work_s` 允许立即重提醒(与 app 勿扰一致)。`_current_mode()` 只看 is_dnd→托盘/UI 自动显示「勿扰」，无需改。
+  - 配置：`AppConfig.fullscreen_dnd: bool=False`，打通 `settings_bridge`(keys/sanitize bool/cfg_to_dict)+`config_service`(get/update)。
+  - 设置页：`SettingsPage.qml`「关闭行为」分割线下方加 **「全屏时自动勿扰」** 开关 + 说明(property/load/_buildPayload 同步)。
+- **遗留约束**：本机 Linux 无 Qt，7 个改动 .py 仅过 `py_compile`；**运行期需 Windows 实测**——①全屏游戏/视频时托盘切勿扰、退出恢复；
+  ②notify 能压过其它置顶窗口。`set_dnd`(仅 rest_service 调，未清 dnd_reason)的既有口径未变，UI/托盘走 `set_run_mode`(清 reason)无回归。
+
 #### 〔历史·已作废〕模态视觉：纯变暗（web 时代，index.html 已删）
 - 全屏 `backdrop-blur` 已去（内存元凶）。曾试卡片级磨砂(.modal-frost)，但**深色背景下磨砂几乎不可见**，
   用户决定不要——**已回退**：模态只剩 `bg-black/70` 纯变暗，calendar-picker-panel 恢复不透明、无 blur。
