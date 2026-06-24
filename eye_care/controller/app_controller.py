@@ -17,6 +17,7 @@ from ..data.repository import UsageDelta, EventRecord
 from ..diagnostics import diag
 from ..diagnostics.diag_events import log_exception_summary
 from ..probes.foreground import get_foreground
+from ..probes.fullscreen import is_foreground_fullscreen
 from ..probes.idle import get_idle_seconds
 from ..ui.state_machines import RestEntryGuardMachine
 from ..ui.state_machines.types import RestEntryGuardState
@@ -985,6 +986,31 @@ class AppController:
                             self._rest_notified = False
                             self._rest_next_prompt_work_s = 0
                     self._emit_event(name="mode_set", payload={"mode": prev, "reason": "auto_app_leave"})
+
+                # 全屏勿扰（前台全屏=游戏/全屏视频时进勿扰，退出全屏恢复）。
+                # 只管理自身 reason=auto_fullscreen，不干预手动勿扰 / app 自动勿扰（后者先行、优先级更高）。
+                fullscreen_dnd_on = bool(getattr(self.cfg, "fullscreen_dnd", False))
+                is_fullscreen = is_foreground_fullscreen() if fullscreen_dnd_on else False
+                if fullscreen_dnd_on and is_fullscreen:
+                    if not self.state.is_dnd:
+                        self.state.prev_mode_before_auto_dnd = self._current_mode()
+                        self.state.is_dnd = True
+                        self.state.dnd_reason = "auto_fullscreen"
+                        self.state.auto_dnd_trigger_app = None
+                        self._emit_event(name="mode_set", payload={"mode": "dnd", "reason": "auto_fullscreen"})
+                elif getattr(self.state, "dnd_reason", None) == "auto_fullscreen":
+                    # 退出全屏 或 用户关掉了全屏勿扰开关 → 恢复进入前的模式
+                    prev = getattr(self.state, "prev_mode_before_auto_dnd", "normal") or "normal"
+                    self.state.dnd_reason = None
+                    self.state.auto_dnd_trigger_app = None
+                    self.state.is_dnd = False
+                    self.state.force_idle = prev == "leave"
+                    # 与 app 自动勿扰一致：结束时若休息提醒已到，允许立即重新提醒（不动 snooze）。
+                    with self._lock:
+                        if self._rest_due:
+                            self._rest_notified = False
+                            self._rest_next_prompt_work_s = 0
+                    self._emit_event(name="mode_set", payload={"mode": prev, "reason": "auto_fullscreen_leave"})
 
                 if not self.state.is_paused and not self.state.force_idle and not self.state.auto_idle:
 
