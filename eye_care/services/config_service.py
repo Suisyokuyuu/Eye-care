@@ -53,6 +53,7 @@ class ConfigService:
             "notify_sound_enabled": bool(getattr(cfg, "notify_sound_enabled", True)),
             "notify_auto_hide_seconds": int(getattr(cfg, "notify_auto_hide_seconds", 20)),
             "rest_end_sound_enabled": bool(getattr(cfg, "rest_end_sound_enabled", True)),
+            "fullscreen_dnd": bool(getattr(cfg, "fullscreen_dnd", True)),
         }
         return {"api_version": API_VERSION, "config": out}
 
@@ -90,6 +91,8 @@ class ConfigService:
             cfg.notify_auto_hide_seconds = max(0, min(600, v))
         if "rest_end_sound_enabled" in updates:
             cfg.rest_end_sound_enabled = bool(updates["rest_end_sound_enabled"])
+        if "fullscreen_dnd" in updates:
+            cfg.fullscreen_dnd = bool(updates["fullscreen_dnd"])
         save_config(self.ctx.controller.cfg_path, cfg)
         self.ctx.controller.on_config_updated()
         return {"ok": True, "api_version": API_VERSION}

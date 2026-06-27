@@ -70,10 +70,24 @@ class QmlNotifyOverlay:
     # ---- 对外 API ----
     def show_notify(self, *, message: str, auto_hide_s: int = 20) -> None:
         """显示浮层并渐入；auto_hide_s 秒后若未操作则自动以 dismiss 隐藏。"""
+        # 每次弹出前重新定位到鼠标所在屏幕，适配多显示器切换场景
+        try:
+            from PySide6.QtGui import QGuiApplication, QCursor
+            screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+            if screen is not None:
+                geo = screen.availableGeometry()
+                self._win.setX(geo.x() + max(0, geo.width() - self.WIDTH - self.MARGIN))
+                self._win.setY(geo.y() + max(0, geo.height() - self.HEIGHT - self.MARGIN))
+        except Exception:
+            pass
         self._win.setProperty("messageText", str(message or ""))
         self._win.setProperty("cardVisible", False)  # 先归零，保证 Behavior 渐入
         self._win.setVisible(True)
         self._apply_acrylic()
+        # 重新抢占置顶 band：WindowStaysOnTopHint 只保证"在普通窗口之上"，但另一个 topmost
+        # 窗口（前台无边框全屏、其它置顶提示）可能排在我们之上→气泡被遮。每次弹出强制把 hwnd
+        # 提到 topmost band 顶部，SWP_NOACTIVATE 避免抢焦点打断用户。
+        self._raise_topmost()
         # 下一拍再置 true，触发淡入动画
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: self._win.setProperty("cardVisible", True))
@@ -107,6 +121,29 @@ class QmlNotifyOverlay:
     def _on_auto_hide(self) -> None:
         self._log.info("qml.notify.auto_hide_fire")
         self._handle_action("dismiss")
+
+    def _raise_topmost(self) -> None:
+        """把窗口强制提到 topmost band 顶部（不抢焦点）。仅 Windows 生效，失败静默降级。"""
+        try:
+            self._win.raise_()
+        except Exception:
+            pass
+        try:
+            import ctypes
+            hwnd = int(self._win.winId())
+            if not hwnd:
+                return
+            HWND_TOPMOST = -1
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOACTIVATE = 0x0010
+            SWP_SHOWWINDOW = 0x0040
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        except Exception:
+            self._log.debug("qml.notify.raise_topmost 失败", exc_info=True)
 
     def _apply_acrylic(self) -> None:
         if self._acrylic_applied or self._win_effects is None:
