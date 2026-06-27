@@ -17,6 +17,8 @@ a = Analysis(
         # 外层副本由 build_exe.bat 的 xcopy 从 _internal 复制。
         ('eye_care/qt_quick/qml', 'eye_care/qt_quick/qml'),
         ('eye_care/assets', 'eye_care/assets'),
+        # 诊断事件字典：策略引擎运行期按路径读取（policy_engine._find_event_codes_path）。
+        ('eye_care/diagnostics/event_codes.yml', 'eye_care/diagnostics'),
         ('icon.ico', '.'),
         ('icon.png', '.'),
         ('README.md', '.'),

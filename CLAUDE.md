@@ -539,10 +539,42 @@ GC 滞后**；RSS 会周期性断崖回落到 ~200-400MB（非无限漏，但峰
   - 控制器：`app_controller._tick_loop` 在 M4 块后加 `auto_fullscreen` 块——进全屏→进勿扰(记进入前模式)，退全屏/关开关→恢复。
     **只管自身 reason**，手动勿扰(reason=manual)/app 自动勿扰(先行、优先)互不干扰；退出时若休息已到清 `_rest_notified`/
     `_rest_next_prompt_work_s` 允许立即重提醒(与 app 勿扰一致)。`_current_mode()` 只看 is_dnd→托盘/UI 自动显示「勿扰」，无需改。
-  - 配置：`AppConfig.fullscreen_dnd: bool=False`，打通 `settings_bridge`(keys/sanitize bool/cfg_to_dict)+`config_service`(get/update)。
+  - 配置：`AppConfig.fullscreen_dnd: bool=True`（**默认开启**），打通 `settings_bridge`(keys/sanitize bool/cfg_to_dict 兜底 True)+`config_service`(get/update)。
+    缺省口径默认开：QML load `c.fullscreen_dnd !== false`、各 getattr 兜底 True——老配置文件无此键时也按开启。
   - 设置页：`SettingsPage.qml`「关闭行为」分割线下方加 **「全屏时自动勿扰」** 开关 + 说明(property/load/_buildPayload 同步)。
 - **遗留约束**：本机 Linux 无 Qt，7 个改动 .py 仅过 `py_compile`；**运行期需 Windows 实测**——①全屏游戏/视频时托盘切勿扰、退出恢复；
   ②notify 能压过其它置顶窗口。`set_dnd`(仅 rest_service 调，未清 dnd_reason)的既有口径未变，UI/托盘走 `set_run_mode`(清 reason)无回归。
+
+#### 离开自动结算失灵排查 + 全屏勿扰去抖（2026-06-27，用户主诉「离开 60s 没自动结算」）
+- **背景**：「离开超过阈值自动结算休息」逻辑在 `app_controller._tick_loop`（idle≥`max(idle_threshold_s, reminder_rest_seconds)`
+  时调 `rest_complete()` 清零连续用眼）。用户反馈时灵时不灵。
+- **bug 1：边沿触发被勿扰吃掉**（已修，治标）。原判定是**边沿触发** `prev_idle<th and idle>=th`，且 `not is_dnd` 才结算。
+  若 idle 跨过阈值那一拍正处勿扰（尤其下面的全屏勿扰），这一拍被挡掉、边沿被消费；之后 `prev_idle` 已 ≥th 永不再「跨过」，
+  勿扰解除也补不上。**改为电平触发 + 一次性闩锁**：新增 `_rested_settled`，条件 `idle>=rested_idle_th and not _rested_settled
+  and not(paused/force_idle/dnd)` 即结算并置闩；`idle<idle_th`（用户恢复操作）时清闩。故勿扰一解除、只要人还没回来，
+  下一拍即可补结算。
+- **bug 2（真凶）：全屏勿扰狂跳**（已修，治本）。`events/*.jsonl` 实测 06-24 起 `auto_fullscreen` 模式 `mode_set` 翻转 **214 次**
+  （每 1~20s 一次 dnd↔normal）。根因：`is_foreground_fullscreen()` 在前台短暂切换（通知/游戏内浮层/alt-tab 一闪）时抖动 →
+  dnd 反复横跳 → 刷爆事件日志 + 狂闪托盘 + 把 auto-settle 边沿吃掉。**修法**：`_tick_loop` 全屏块加**迟滞去抖**——
+  连续同向计数 `_fs_true_streak`/`_fs_false_streak` + 稳定判定 `_fs_stable`，进入要连续 `FULLSCREEN_ENTER_TICKS=2` 拍、
+  退出要连续 `FULLSCREEN_LEAVE_TICKS=4` 拍（退出更钝，吃掉瞬时非全屏）。实测翻转 214→0。
+- **诊断日志**：tick 里加 `debug: auto-settle eval idle=.. prev_idle=.. idle_th=.. rested_th=.. settled=.. dnd/force_idle/paused/resting`
+  （吃 `--debug`/`EYECARE_DEBUG`，节流 5s、idle≥3 才打）。`_auto_settle_diag_ts` 节流戳。**保留**（平时不出，排障用）。
+- **最终定性（非 bug，idle 检测天生局限）**：诊断日志实测 idle 是 **~30s 锯齿波**（`3→8→…→28→归零`，封顶 28 到不了 60）。
+  代码全仓无 `SendInput/mouse_event/keybd_event/SetCursorPos`，**App 自己不造输入**——是用户环境每 ~30s 注入一次真实输入
+  （视频/播放器防黑屏假按键、防挂机/晃动器、游戏手柄漂移/防 AFK、远程串流 keepalive）。`GetLastInputInfo` 分不清真人与
+  合成输入 → idle 被清零够不到阈值。**同一份 log 两种情况都印证**：有注入源的会话 idle 封顶 28、不结算；无注入源的会话
+  idle 干净爬到 168、`settled=True` 正常结算。用户选「先自查输入源」（关掉视频/晃动器再试），不上底层钩子。
+  **遗留可选项**：若要「放着游戏/视频离开也能结算」，需上 `WH_KEYBOARD_LL`/`WH_MOUSE_LL` 底层钩子只认真实硬件输入、
+  丢弃 `LLKHF_INJECTED` 合成输入（改动较大，未做）。
+- **顺带修：`event_codes.yml` 缺失**。`docs/` 被删时连 `docs/diagnostics/event_codes.yml` 一起删，但 `policy_engine` 运行期仍按
+  此路径加载 → 每次启动 ERROR + 策略引擎降级 → 所有诊断事件刷 `DIAG_UNKNOWN_EVENT` 告警（spec 还留着 `hiddenimports=['yaml']`，
+  证明是误删）。**修法**：从 git `ec9c0e1` 取出该文件，**作为后端的一环**落到 `eye_care/diagnostics/event_codes.yml`（不再回 docs/）；
+  `policy_engine._find_event_codes_path()` 改为优先读模块同目录（旧 docs/ 路径留作兼容兜底）；`EyE Care.spec` 的 `datas` 增打
+  `('eye_care/diagnostics/event_codes.yml', 'eye_care/diagnostics')`。实测启动 ERROR + 那批告警消失。
+- **遗留约束**：本机 Linux 无 Qt，改动（`app_controller.py`/`policy_engine.py`/`EyE Care.spec` + 新增 yml）仅过 `py_compile` 与
+  纯逻辑驱动测试（用真实 `AppController` + mock 探针，三场景：基础/边界 59s/全屏去抖全绿）。**用户已 Windows 实跑确认**：
+  去抖翻转=0、idle 无注入源时爬过 60 触发结算（`settled=True`）。
 
 #### 〔历史·已作废〕模态视觉：纯变暗（web 时代，index.html 已删）
 - 全屏 `backdrop-blur` 已去（内存元凶）。曾试卡片级磨砂(.modal-frost)，但**深色背景下磨砂几乎不可见**，

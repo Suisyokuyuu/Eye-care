@@ -34,7 +34,7 @@ Item {
     property int  notifyHide: 20
     property bool notifySound: true
     property bool restEndSound: true
-    property bool fullscreenDnd: false   // 前台全屏时自动勿扰
+    property bool fullscreenDnd: true    // 前台全屏时自动勿扰（默认开）
     property bool showOnboarding: true   // true=启动显示引导
 
     // 引导用矩形：未勾选休息提醒时的紧凑卡片（约 600px 高，无休息设置组）
@@ -73,7 +73,7 @@ Item {
         notifyHide     = (c.notify_auto_hide_seconds !== undefined) ? c.notify_auto_hide_seconds : 20;
         notifySound    = c.notify_sound_enabled !== false;
         restEndSound   = c.rest_end_sound_enabled !== false;
-        fullscreenDnd  = !!c.fullscreen_dnd;
+        fullscreenDnd  = c.fullscreen_dnd !== false;
         showOnboarding = c.show_onboarding !== false;
     }
     function _buildPayload() {
