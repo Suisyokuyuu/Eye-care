@@ -53,7 +53,7 @@ class ConfigService:
             "notify_sound_enabled": bool(getattr(cfg, "notify_sound_enabled", True)),
             "notify_auto_hide_seconds": int(getattr(cfg, "notify_auto_hide_seconds", 20)),
             "rest_end_sound_enabled": bool(getattr(cfg, "rest_end_sound_enabled", True)),
-            "fullscreen_dnd": bool(getattr(cfg, "fullscreen_dnd", False)),
+            "fullscreen_dnd": bool(getattr(cfg, "fullscreen_dnd", True)),
         }
         return {"api_version": API_VERSION, "config": out}
 

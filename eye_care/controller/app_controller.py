@@ -39,6 +39,12 @@ CHECKPOINT_INTERVAL_S = 60 * 60
 # 口径：无论工作阈值多小，提醒之间至少相隔 60 秒。
 MIN_REMIND_COOLDOWN_S = 60
 
+# 全屏勿扰去抖（单位=tick，≈秒）：进入要连续 N 拍判为全屏才进勿扰；退出要连续 M 拍判为
+# 非全屏才退出。退出阈值更大，以吃掉前台短暂切换（通知/浮层/alt-tab 一闪）造成的瞬时非全屏，
+# 避免 dnd 反复横跳。
+FULLSCREEN_ENTER_TICKS = 2
+FULLSCREEN_LEAVE_TICKS = 4
+
 
 @dataclass
 class ControllerState:
@@ -89,6 +95,12 @@ class AppController:
         # auto_idle 防闪烁：记录进入 auto_idle 的时间，退出前需保持最小持续时间
         self._auto_idle_entered_at: float = 0.0
         self._auto_idle_min_duration: float = 1.0  # 最小保持 1 秒
+        # 全屏勿扰去抖：原始 is_foreground_fullscreen() 会因前台短暂切换（通知/游戏内浮层/
+        # alt-tab 一闪）频繁抖动，导致 dnd 反复横跳——刷爆事件日志、狂闪托盘、还会把
+        # auto-settle 的判定吃掉。用连续同向计数做迟滞：进入要连续 True、退出要连续 False。
+        self._fs_true_streak: int = 0
+        self._fs_false_streak: int = 0
+        self._fs_stable: bool = False  # 去抖后的稳定全屏判定
         # app_paths 后台加载：异步加载，避免阻塞启动
         self._app_paths_loaded = threading.Event()
         self._app_paths_loading = False
@@ -118,10 +130,15 @@ class AppController:
         # 休息中：不计时、不触发提醒。
         self._is_resting: bool = False
 
+        # 本次“离开”是否已自动结算过（电平触发闩锁）：避免离开期间每拍反复结算；
+        # 用户恢复操作（idle 落回 idle_threshold_s 以下）时清除，允许下次离开再结算。
+        self._rested_settled: bool = False
+
         # debug flags (runtime, non-persisted)
         self._debug_notify: bool = False
         self._debug_last_log_ts: float = 0.0
         self._debug_last_tick_log_ts: float = 0.0
+        self._auto_settle_diag_ts: float = 0.0  # 离开自动结算诊断日志的节流时间戳
         self._debug_post_notify_show_cb: Optional[Callable[[], None]] = None
 
         # rest blocked 日志降噪：仅状态变化时输出
@@ -990,7 +1007,19 @@ class AppController:
                 # 全屏勿扰（前台全屏=游戏/全屏视频时进勿扰，退出全屏恢复）。
                 # 只管理自身 reason=auto_fullscreen，不干预手动勿扰 / app 自动勿扰（后者先行、优先级更高）。
                 fullscreen_dnd_on = bool(getattr(self.cfg, "fullscreen_dnd", False))
-                is_fullscreen = is_foreground_fullscreen() if fullscreen_dnd_on else False
+                raw_fullscreen = is_foreground_fullscreen() if fullscreen_dnd_on else False
+                # 去抖：连续同向计数，跨过阈值才翻转稳定判定，过滤瞬时抖动。
+                if raw_fullscreen:
+                    self._fs_true_streak += 1
+                    self._fs_false_streak = 0
+                else:
+                    self._fs_false_streak += 1
+                    self._fs_true_streak = 0
+                if not self._fs_stable and self._fs_true_streak >= FULLSCREEN_ENTER_TICKS:
+                    self._fs_stable = True
+                elif self._fs_stable and self._fs_false_streak >= FULLSCREEN_LEAVE_TICKS:
+                    self._fs_stable = False
+                is_fullscreen = fullscreen_dnd_on and self._fs_stable
                 if fullscreen_dnd_on and is_fullscreen:
                     if not self.state.is_dnd:
                         self.state.prev_mode_before_auto_dnd = self._current_mode()
@@ -1088,9 +1117,36 @@ class AppController:
                 # 仍保证不小于一次休息时长，避免 idle 阈值被设得过小（如 3s）时一停就清零。
                 rest_s = int(getattr(self.cfg, "reminder_rest_seconds", 20) or 20)
                 rested_idle_th = max(int(idle_th), rest_s)
-                if rested_idle_th > 0 and prev_idle < rested_idle_th and idle >= rested_idle_th:
+                # 用户恢复操作（idle 落回阈值以下）→ 清除"本次离开已结算"闩锁，允许下次离开再结算。
+                if idle < idle_th:
+                    self._rested_settled = False
+                # 诊断（吃 --debug / EYECARE_DEBUG）：把离开期间的真实 idle 读数与各 flag 打出来，
+                # 便于定位"明明离开 >60s 却没自动结算"——若离开期间这行始终不出现，说明 idle 没涨上去
+                # （系统层面一直被判为有输入：后台程序/外设/防挂机），而非结算逻辑的问题。
+                if idle >= 3:
+                    try:
+                        from ..diagnostics.debug_switch import is_debug_enabled
+                        _now_diag = time.time()
+                        if is_debug_enabled() and (_now_diag - float(self._auto_settle_diag_ts) >= 5.0):
+                            self._auto_settle_diag_ts = _now_diag
+                            log.info(
+                                "debug: auto-settle eval idle=%s prev_idle=%s idle_th=%s rested_th=%s settled=%s dnd=%s force_idle=%s paused=%s resting=%s",
+                                idle, prev_idle, idle_th, rested_idle_th,
+                                self._rested_settled, self.state.is_dnd,
+                                self.state.force_idle, self.state.is_paused, self._is_resting,
+                            )
+                    except Exception:
+                        pass
+                # [FIX] 电平触发 + 一次性闩锁（原为边沿触发 prev_idle<th and idle>=th）。
+                # 旧的边沿触发有漏洞：若 idle 跨过阈值的那一拍正处于勿扰（如全屏自动勿扰），
+                # 这一拍被 not is_dnd 挡掉、边沿被消费；之后 prev_idle 已 >= th，永不再"跨过"，
+                # 等勿扰解除时也无法补结算。改电平触发后：只要离开够久、当前不在
+                # paused/force_idle/dnd、且本次离开尚未结算过，就结算——故勿扰解除后只要
+                # 人还没回来（idle 仍 >= th），下一拍即可补结算。
+                if rested_idle_th > 0 and idle >= rested_idle_th and not self._rested_settled:
                     if (not self.state.is_paused) and (not self.state.force_idle) and (not self.state.is_dnd):
                         self.rest_complete()
+                        self._rested_settled = True
 
                 now = time.time()
 
