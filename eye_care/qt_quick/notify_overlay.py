@@ -62,20 +62,19 @@ class QmlNotifyOverlay:
     # ---- 对外 API ----
     def show_notify(self, *, message: str, auto_hide_s: int = 20) -> None:
         """显示浮层并渐入；auto_hide_s 秒后若未操作则自动以 dismiss 隐藏。"""
-<<<<<<< Updated upstream
-=======
         self._visibility_generation += 1
-        # 每次弹出前先把 QWindow 归属切到目标屏，再按该屏逻辑坐标定位。
-        # 仅修改 x/y 时，混合 DPI 环境可能短暂沿用上一块屏幕的缩放上下文。
         try:
             self._place_on_screen(self._target_screen())
         except Exception:
             self._log.debug("qml.notify place_on_screen failed", exc_info=True)
->>>>>>> Stashed changes
         self._win.setProperty("messageText", str(message or ""))
         self._win.setProperty("cardVisible", False)  # 先归零，保证 Behavior 渐入
         self._win.setVisible(True)
         self._apply_acrylic()
+        # 重新抢占置顶 band：WindowStaysOnTopHint 只保证"在普通窗口之上"，但另一个 topmost
+        # 窗口（前台无边框全屏、其它置顶提示）可能排在我们之上→气泡被遮。每次弹出强制把 hwnd
+        # 提到 topmost band 顶部，SWP_NOACTIVATE 避免抢焦点打断用户。
+        self._raise_topmost()
         # 下一拍再置 true，触发淡入动画
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: self._win.setProperty("cardVisible", True))
@@ -115,10 +114,7 @@ class QmlNotifyOverlay:
         self._log.info("qml.notify.auto_hide_fire")
         self._handle_action("dismiss")
 
-<<<<<<< Updated upstream
-=======
     def _hide_if_current(self, generation: int) -> None:
-        """只隐藏发起本次渐出的那一代窗口，防止旧定时器误关新弹窗。"""
         if generation == self._visibility_generation:
             self._win.setVisible(False)
 
@@ -200,7 +196,6 @@ class QmlNotifyOverlay:
         except Exception:
             self._log.debug("qml.notify.raise_topmost 失败", exc_info=True)
 
->>>>>>> Stashed changes
     def _apply_acrylic(self) -> None:
         if self._acrylic_applied or self._win_effects is None:
             return
