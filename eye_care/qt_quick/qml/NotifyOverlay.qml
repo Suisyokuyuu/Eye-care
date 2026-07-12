@@ -4,7 +4,7 @@ import QtQuick.Window
 // 休息提醒浮层（QML 原生版，复刻原 web notify 浮层观感）。
 // - 无边框 / 置顶 / Tool / 透明背景，由 Windows Acrylic（Python 侧 win_effects）透出毛玻璃。
 // - Python 读写 messageText / cardVisible，监听 actionTriggered(name)。
-//   name: "rest"=立刻休息, "snooze"=稍后/关闭, "dismiss"=自动隐藏。
+//   name: "rest"=立刻休息, "snooze"=稍后, "dismiss"=关闭/自动隐藏。
 Window {
     id: win
     width: 400
@@ -80,7 +80,7 @@ Window {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: win.actionTriggered("snooze")
+                        onClicked: win.actionTriggered("dismiss")
                     }
                 }
 

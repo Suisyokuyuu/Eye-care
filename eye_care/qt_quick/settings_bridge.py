@@ -37,7 +37,6 @@ _SETTINGS_KEYS = (
     "notify_auto_hide_seconds",
     "notify_sound_enabled",
     "rest_end_sound_enabled",
-    "fullscreen_dnd",
     "show_onboarding",
 )
 
@@ -56,8 +55,7 @@ def sanitize(payload: dict) -> dict:
     out: dict = {}
     # 布尔
     for k in ("startup_launch_at_login", "startup_dnd", "startup_show_main",
-              "notify_enabled", "notify_sound_enabled", "rest_end_sound_enabled",
-              "fullscreen_dnd"):
+              "notify_enabled", "notify_sound_enabled", "rest_end_sound_enabled"):
         if k in p:
             out[k] = bool(p[k])
     # 无操作暂停 3..300
@@ -106,7 +104,6 @@ def cfg_to_dict(cfg) -> dict:
         "notify_auto_hide_seconds": int(g("notify_auto_hide_seconds", 20)),
         "notify_sound_enabled": bool(g("notify_sound_enabled", True)),
         "rest_end_sound_enabled": bool(g("rest_end_sound_enabled", True)),
-        "fullscreen_dnd": bool(g("fullscreen_dnd", True)),
         "show_onboarding": bool(g("show_onboarding", True)),
     }
 

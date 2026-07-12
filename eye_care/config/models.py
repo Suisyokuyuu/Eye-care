@@ -51,8 +51,6 @@ class AppConfig:
     app_display_overrides: Dict[str, str] = field(default_factory=dict)
     # 该 app 为前台时自动勿扰（app_short -> True）
     app_auto_dnd_on_focus: Dict[str, bool] = field(default_factory=dict)
-    # 前台应用进入全屏（游戏/全屏视频）时自动进勿扰，退出全屏恢复。默认开启。
-    fullscreen_dnd: bool = True
     # 排除计时的黑名单（app_short 列表，不记录、不触发休息）
     blacklist_apps: List[str] = field(default_factory=list)
 

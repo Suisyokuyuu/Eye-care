@@ -39,25 +39,16 @@ _UNKNOWN_LOG_WINDOW_S = 60
 
 
 def _find_event_codes_path() -> Path:
-    """定位 event_codes.yml。
-
-    现作为后端的一环随包发布：文件位于本模块同目录
-    （eye_care/diagnostics/event_codes.yml），打包时由 spec 的 datas 一并带上。
-    保留旧 docs/ 路径作为向后兼容兜底（旧布局 / 开发期）。
-    """
-    here = Path(__file__).resolve().parent
-    p = here / "event_codes.yml"
+    """定位 docs/diagnostics/event_codes.yml。"""
+    base = Path(__file__).resolve().parent.parent.parent
+    p = base / "docs" / "diagnostics" / "event_codes.yml"
     if p.exists():
         return p
-    # 向后兼容：旧 docs 布局
-    base = here.parent.parent
-    legacy = base / "docs" / "diagnostics" / "event_codes.yml"
-    if legacy.exists():
-        return legacy
-    legacy_cwd = Path.cwd() / "docs" / "diagnostics" / "event_codes.yml"
-    if legacy_cwd.exists():
-        return legacy_cwd
-    return p
+    # fallback: cwd
+    p2 = Path.cwd() / "docs" / "diagnostics" / "event_codes.yml"
+    if p2.exists():
+        return p2
+    return base / "docs" / "diagnostics" / "event_codes.yml"
 
 
 def _load_config() -> Dict[str, Any]:

@@ -54,6 +54,7 @@ class QmlRestOverlay:
         self._on_snooze = on_snooze
         self._on_complete = on_complete
         self._win_effects = win_effects
+        self._screen = screen
         self._acrylic_applied = False
         self._end_ms = 0
         self._duration = 0
@@ -66,17 +67,14 @@ class QmlRestOverlay:
         self._win = roots[0]
         self._win.actionTriggered.connect(self._handle_action)
 
-        # 铺满目标屏（用 geometry 全屏，含任务栏；与 web 版 screen.geometry() 一致）
+        # 铺满目标屏（用 geometry 全屏，含任务栏）。显示前还会再次同步，适配运行期 DPI/分辨率变化。
+        self.sync_geometry()
         if screen is not None:
-            try:
-                self._win.setScreen(screen)
-            except Exception:
-                pass
-            geo = screen.geometry()
-            self._win.setX(geo.x())
-            self._win.setY(geo.y())
-            self._win.setWidth(geo.width())
-            self._win.setHeight(geo.height())
+            for signal_name in ("geometryChanged", "availableGeometryChanged", "logicalDotsPerInchChanged"):
+                try:
+                    getattr(screen, signal_name).connect(lambda *_args: self.sync_geometry())
+                except Exception:
+                    pass
 
         # 倒计时：墙钟驱动，每 250ms 刷一次（与 web rest.js 一致，避免漂移）
         self._tick_timer = QTimer()
@@ -87,6 +85,7 @@ class QmlRestOverlay:
     def show_overlay(self, *, duration_s: int) -> None:
         from PySide6.QtCore import QTimer
 
+        self.sync_geometry()
         self.rest_started = True
         self._duration = max(1, int(duration_s or 20))
         self._end_ms = int(time.time() * 1000) + self._duration * 1000
@@ -117,6 +116,31 @@ class QmlRestOverlay:
     @property
     def window(self):
         return self._win
+
+    @property
+    def screen_name(self) -> str:
+        try:
+            return str(self._screen.name()) if self._screen is not None else ""
+        except Exception:
+            return ""
+
+    def sync_geometry(self) -> None:
+        """按目标 QScreen 的逻辑坐标重新铺满，避免手工 DPR 换算造成二次缩放。"""
+        screen = self._screen
+        if screen is None:
+            return
+        try:
+            self._win.setScreen(screen)
+        except Exception:
+            self._log.debug("qml.rest setScreen failed screen=%s", self.screen_idx, exc_info=True)
+        try:
+            geo = screen.geometry()
+            self._win.setX(geo.x())
+            self._win.setY(geo.y())
+            self._win.setWidth(geo.width())
+            self._win.setHeight(geo.height())
+        except Exception:
+            self._log.exception("qml.rest sync geometry failed screen=%s", self.screen_idx)
 
     # ---- 内部 ----
     def _tick(self) -> None:

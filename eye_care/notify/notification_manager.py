@@ -100,7 +100,12 @@ class NotificationManager:
             self._dispatcher.post_notify_show(snapshot_extra, prompt_key)
 
     def on_notify_complete(
-        self, prompt_key: tuple[str, int], result: Optional[bool], extra: dict
+        self,
+        prompt_key: tuple[str, int],
+        result: Optional[bool],
+        extra: dict,
+        *,
+        mark_notified: bool = True,
     ) -> None:
         if prompt_key is None or extra is None:
             return
@@ -117,12 +122,15 @@ class NotificationManager:
             if dbg:
                 log.info("notify: show_done(result=True)")
             try:
-                if callable(self._mark_notified) and not extra.get("debug_only") and prompt_key[-1] >= 0:
+                if mark_notified and callable(self._mark_notified) and not extra.get("debug_only") and prompt_key[-1] >= 0:
                     self._mark_notified()
             except Exception:
                 log.exception("notify: _mark_notified failed on result=True")
-            self._shown_prompt_keys.add(prompt_key)
-            self._prune_shown_keys()
+            # Controller 已自行安排 snooze/dismiss 时，不永久记住当前 bucket；否则短冷却后
+            # 即使 controller 重新放行，也会被同一个 prompt_key 吞掉。
+            if mark_notified:
+                self._shown_prompt_keys.add(prompt_key)
+                self._prune_shown_keys()
             self._last_show_time = time.time()
             return
 

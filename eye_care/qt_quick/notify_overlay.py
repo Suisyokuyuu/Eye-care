@@ -43,6 +43,7 @@ class QmlNotifyOverlay:
         self._on_action = on_action
         self._win_effects = win_effects
         self._acrylic_applied = False
+        self._visibility_generation = 0
 
         self._engine = QQmlApplicationEngine()
         self._engine.load(QUrl.fromLocalFile(str(_QML_PATH)))
@@ -52,16 +53,7 @@ class QmlNotifyOverlay:
         self._win = roots[0]
         self._win.actionTriggered.connect(self._handle_action)
 
-        # 右下角定位
-        screen = QGuiApplication.primaryScreen()
-        geo = screen.availableGeometry() if screen is not None else None
-        if geo is not None:
-            x = geo.x() + max(0, geo.width() - self.WIDTH - self.MARGIN)
-            y = geo.y() + max(0, geo.height() - self.HEIGHT - self.MARGIN)
-            self._win.setWidth(self.WIDTH)
-            self._win.setHeight(self.HEIGHT)
-            self._win.setX(x)
-            self._win.setY(y)
+        self._place_on_screen(QGuiApplication.primaryScreen())
 
         self._hide_timer = QTimer()
         self._hide_timer.setSingleShot(True)
@@ -70,37 +62,38 @@ class QmlNotifyOverlay:
     # ---- 对外 API ----
     def show_notify(self, *, message: str, auto_hide_s: int = 20) -> None:
         """显示浮层并渐入；auto_hide_s 秒后若未操作则自动以 dismiss 隐藏。"""
-        # 每次弹出前重新定位到鼠标所在屏幕，适配多显示器切换场景
+<<<<<<< Updated upstream
+=======
+        self._visibility_generation += 1
+        # 每次弹出前先把 QWindow 归属切到目标屏，再按该屏逻辑坐标定位。
+        # 仅修改 x/y 时，混合 DPI 环境可能短暂沿用上一块屏幕的缩放上下文。
         try:
-            from PySide6.QtGui import QGuiApplication, QCursor
-            screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-            if screen is not None:
-                geo = screen.availableGeometry()
-                self._win.setX(geo.x() + max(0, geo.width() - self.WIDTH - self.MARGIN))
-                self._win.setY(geo.y() + max(0, geo.height() - self.HEIGHT - self.MARGIN))
+            self._place_on_screen(self._target_screen())
         except Exception:
-            pass
+            self._log.debug("qml.notify place_on_screen failed", exc_info=True)
+>>>>>>> Stashed changes
         self._win.setProperty("messageText", str(message or ""))
         self._win.setProperty("cardVisible", False)  # 先归零，保证 Behavior 渐入
         self._win.setVisible(True)
         self._apply_acrylic()
-        # 重新抢占置顶 band：WindowStaysOnTopHint 只保证"在普通窗口之上"，但另一个 topmost
-        # 窗口（前台无边框全屏、其它置顶提示）可能排在我们之上→气泡被遮。每次弹出强制把 hwnd
-        # 提到 topmost band 顶部，SWP_NOACTIVATE 避免抢焦点打断用户。
-        self._raise_topmost()
         # 下一拍再置 true，触发淡入动画
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: self._win.setProperty("cardVisible", True))
-        secs = max(1, min(600, int(auto_hide_s or 20)))
-        self._hide_timer.start(secs * 1000)
+        secs = max(0, min(600, int(20 if auto_hide_s is None else auto_hide_s)))
+        if secs > 0:
+            self._hide_timer.start(secs * 1000)
+        else:
+            self._hide_timer.stop()
         self._log.info("qml.notify.show auto_hide_s=%s", secs)
 
     def hide_notify(self, *, reason: str = "dismiss") -> None:
         """渐出后隐藏窗口。"""
         self._hide_timer.stop()
+        self._visibility_generation += 1
+        generation = self._visibility_generation
         self._win.setProperty("cardVisible", False)
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(230, lambda: self._win.setVisible(False))
+        QTimer.singleShot(230, lambda: self._hide_if_current(generation))
         self._log.info("qml.notify.hide reason=%s", reason)
 
     @property
@@ -121,6 +114,68 @@ class QmlNotifyOverlay:
     def _on_auto_hide(self) -> None:
         self._log.info("qml.notify.auto_hide_fire")
         self._handle_action("dismiss")
+
+<<<<<<< Updated upstream
+=======
+    def _hide_if_current(self, generation: int) -> None:
+        """只隐藏发起本次渐出的那一代窗口，防止旧定时器误关新弹窗。"""
+        if generation == self._visibility_generation:
+            self._win.setVisible(False)
+
+    def _place_on_screen(self, screen) -> None:
+        if screen is None:
+            return
+        try:
+            self._win.setScreen(screen)
+        except Exception:
+            self._log.debug("qml.notify setScreen failed", exc_info=True)
+        geo = screen.availableGeometry()
+        self._win.setWidth(self.WIDTH)
+        self._win.setHeight(self.HEIGHT)
+        self._win.setX(geo.x() + max(0, geo.width() - self.WIDTH - self.MARGIN))
+        self._win.setY(geo.y() + max(0, geo.height() - self.HEIGHT - self.MARGIN))
+
+    @staticmethod
+    def _target_screen():
+        """优先前台应用所在屏，取不到时回退鼠标屏幕。"""
+        from PySide6.QtGui import QGuiApplication, QCursor
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG), ("top", wintypes.LONG),
+                    ("right", wintypes.LONG), ("bottom", wintypes.LONG),
+                ]
+
+            class _MONITORINFOEXW(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD), ("rcMonitor", _RECT),
+                    ("rcWork", _RECT), ("dwFlags", wintypes.DWORD),
+                    ("szDevice", wintypes.WCHAR * 32),
+                ]
+
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            monitor_from_window = user32.MonitorFromWindow
+            monitor_from_window.argtypes = [wintypes.HWND, wintypes.DWORD]
+            monitor_from_window.restype = ctypes.c_void_p
+            get_monitor_info = user32.GetMonitorInfoW
+            get_monitor_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFOEXW)]
+            get_monitor_info.restype = wintypes.BOOL
+            monitor = monitor_from_window(hwnd, 2) if hwnd else None
+            if monitor:
+                info = _MONITORINFOEXW()
+                info.cbSize = ctypes.sizeof(_MONITORINFOEXW)
+                if get_monitor_info(monitor, ctypes.byref(info)):
+                    device = str(info.szDevice or "").casefold()
+                    for screen in QGuiApplication.screens() or []:
+                        if str(screen.name() or "").casefold() == device:
+                            return screen
+        except Exception:
+            pass
+        return QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
 
     def _raise_topmost(self) -> None:
         """把窗口强制提到 topmost band 顶部（不抢焦点）。仅 Windows 生效，失败静默降级。"""
@@ -145,6 +200,7 @@ class QmlNotifyOverlay:
         except Exception:
             self._log.debug("qml.notify.raise_topmost 失败", exc_info=True)
 
+>>>>>>> Stashed changes
     def _apply_acrylic(self) -> None:
         if self._acrylic_applied or self._win_effects is None:
             return

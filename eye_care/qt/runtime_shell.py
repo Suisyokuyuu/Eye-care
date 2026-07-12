@@ -165,6 +165,18 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             except Exception:
                 pass
 
+    def _tray_mode_from_state() -> str:
+        state = getattr(controller, "state", None) if controller is not None else None
+        if state is None:
+            return "normal"
+        if bool(getattr(state, "is_dnd", False)):
+            return "dnd"
+        if bool(getattr(state, "force_idle", False)):
+            return "leave"
+        if bool(getattr(state, "auto_idle", False)):
+            return "idle"
+        return "normal"
+
     def _open_settings() -> None:
         _show_main_window()
         _qml_invoke("openSettings")
@@ -202,7 +214,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             cfg = getattr(_controller(), "cfg", None)
             if cfg is None:
                 return 20
-            return max(1, min(600, int(getattr(cfg, "notify_auto_hide_seconds", 20) or 20)))
+            value = getattr(cfg, "notify_auto_hide_seconds", 20)
+            return max(0, min(600, int(20 if value is None else value)))
         except Exception:
             return 20
 
@@ -257,7 +270,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             return {"ok": False, "reason": "not_ready"}
 
         message = str(payload.get("message") or "Take a short break")
-        auto_hide_s = int(payload.get("auto_hide_s") or _notify_auto_hide_seconds())
+        raw_auto_hide = payload.get("auto_hide_s")
+        auto_hide_s = int(_notify_auto_hide_seconds() if raw_auto_hide is None else raw_auto_hide)
         session = int(payload.get("session") or 0)
         if getattr(window, "notify_active_session", 0) == session and getattr(window, "notify_visible", False):
             return {"ok": True, "reason": "already_visible", "session": session}
@@ -335,17 +349,40 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             self.notify_visible = False
             self.active_prompt_key = None
             self.active_extra = {}
-            try:
-                _notify_complete(prompt_key, extra)
-            except Exception:
-                log.exception("qt.qml_notify_action notify_complete failed name=%s", name)
+            mark_notified = True
+            is_natural_prompt = prompt_key is not None and not bool(extra.get("debug_only"))
             if act == "rest":
                 bridge = qt_bridge_ref.get("value")
                 if bridge is not None:
                     try:
-                        bridge.showRestOverlay()
+                        start_result = bridge.startRest()
+                        if bool((start_result or {}).get("ok")):
+                            bridge.showRestOverlay()
+                        else:
+                            log.warning("qt.qml_notify_action rest start rejected result=%s", start_result)
                     except Exception:
-                        log.exception("qt.qml_notify_action showRestOverlay failed")
+                        log.exception("qt.qml_notify_action start/show rest failed")
+            elif act == "snooze":
+                # 通知上的「稍后」是明确用户选择：延后一个完整提醒周期。
+                try:
+                    if controller is not None and is_natural_prompt:
+                        controller.rest_snooze()
+                        mark_notified = False
+                except Exception:
+                    log.exception("qt.qml_notify_action snooze failed")
+            elif act in ("dismiss", "auto-close"):
+                # 关闭/自动消失也结束本轮提醒；再连续用眼一个完整间隔后才进入下一轮。
+                # 与「稍后」分开记录，避免把自动消失计入用户主动跳过统计。
+                try:
+                    if controller is not None and is_natural_prompt:
+                        controller.dismiss_rest_prompt()
+                        mark_notified = False
+                except Exception:
+                    log.exception("qt.qml_notify_action dismiss failed")
+            try:
+                _notify_complete(prompt_key, extra, mark_notified=mark_notified)
+            except Exception:
+                log.exception("qt.qml_notify_action notify_complete failed name=%s", name)
             log.info("qt.qml_notify_action name=%s normalized=%s", name, act)
 
     def _ensure_notify_window(bridge: QObject = None):
@@ -389,9 +426,20 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         _qml_rest_finish("snooze")
 
     def _ensure_rest_overlays(bridge: QObject = None) -> None:
-        if rest_overlays:
-            return
         screens = QGuiApplication.screens() or []
+        wanted_names = [str(screen.name()) for screen in screens]
+        current_names = [str(getattr(overlay, "screen_name", "")) for overlay in rest_overlays]
+        if rest_overlays and current_names == wanted_names:
+            for overlay in rest_overlays:
+                overlay.sync_geometry()
+            return
+        # 屏幕拓扑发生变化时重建池；该函数只在准备显示新一轮休息时调用。
+        for overlay in rest_overlays:
+            try:
+                overlay.hide_overlay()
+            except Exception:
+                pass
+        rest_overlays.clear()
         from ..qt_quick.rest_overlay import QmlRestOverlay
         for idx, screen in enumerate(screens):
             rest_overlays.append(QmlRestOverlay(
@@ -411,12 +459,12 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         def post_notify_show(self, extra: dict, prompt_key) -> None:
             self.notifyShowRequested.emit(extra, prompt_key)
 
-    def _notify_complete(prompt_key, extra: dict | None) -> None:
+    def _notify_complete(prompt_key, extra: dict | None, *, mark_notified: bool = True) -> None:
         manager = notification_manager_ref.get("value")
         if manager is None or prompt_key is None:
             return
         try:
-            manager.on_notify_complete(prompt_key, True, extra or {})
+            manager.on_notify_complete(prompt_key, True, extra or {}, mark_notified=mark_notified)
         except Exception:
             log.exception("qt notify complete callback failed")
 
@@ -674,13 +722,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             self.aboutToShow.connect(self._sync_menu_state)
 
         def _sync_menu_state(self) -> None:
-            state = getattr(controller, "state", None) if controller is not None else None
-            mode = "normal"
-            if state is not None:
-                if bool(getattr(state, "force_idle", False)):
-                    mode = "leave"
-                elif bool(getattr(state, "is_dnd", False)):
-                    mode = "dnd"
+            mode = _tray_mode_from_state()
             self.actions["mode_normal"].setChecked(mode == "normal")
             self.actions["mode_dnd"].setChecked(mode == "dnd")
             self.actions["mode_leave"].setChecked(mode == "leave")
@@ -700,13 +742,18 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             from PySide6.QtGui import QPainter
             p = QPainter(pixmap)
             p.setRenderHint(QPainter.Antialiasing)
-            color_map = {"normal": "#22C55E", "dnd": "#EF4444", "leave": "#6B7280"}
+            color_map = {"normal": "#22C55E", "dnd": "#EF4444", "leave": "#6B7280", "idle": "#94A3B8"}
             p.setBrush(QColor(color_map.get(mode, "#22C55E")))
             p.setPen(Qt.NoPen)
             p.drawEllipse(20, 20, 10, 10)
             p.end()
             self.tray.setIcon(QIcon(pixmap))
-            tooltips = {"normal": "EyE Care - 正常", "dnd": "EyE Care - 勿扰", "leave": "EyE Care - 离开"}
+            tooltips = {
+                "normal": "EyE Care - 正常",
+                "dnd": "EyE Care - 勿扰",
+                "leave": "EyE Care - 离开",
+                "idle": "EyE Care - 暂离",
+            }
             self.tray.setToolTip(tooltips.get(mode, "EyE Care"))
 
         def _on_activated(self, reason) -> None:
@@ -817,6 +864,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     diag.emit("DIAG_CONTROLLER_INIT", log, "初始化Controller")
     controller = AppController(data_dir=data_dir)
     controller.state.is_dnd = bool(getattr(controller.cfg, "startup_dnd", False))
+    if controller.state.is_dnd:
+        controller.state.dnd_reason = "manual"
     try:
         from eye_care.diagnostics.debug_switch import is_debug_enabled
         is_debug_enabled(config_enabled=getattr(controller.cfg, "debug_enabled", False))
@@ -876,6 +925,56 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             notifier_service_ref["value"].start()
     except Exception:
         log.exception("qt notifier_service start failed")
+
+    def _fit_main_window_to_screen(window, screen=None) -> None:
+        """把普通态主窗约束到当前屏幕的可用逻辑区域；Qt/PMv2 负责实际像素换算。"""
+        try:
+            from PySide6.QtGui import QWindow
+            target = screen or window.screen() or QGuiApplication.primaryScreen()
+            if target is None:
+                return
+            geo = target.availableGeometry()
+            margin = 16
+            max_w = max(320, geo.width() - margin * 2)
+            max_h = max(240, geo.height() - margin * 2)
+            min_w = min(980, max_w)
+            min_h = min(620, max_h)
+            window.setMinimumWidth(min_w)
+            window.setMinimumHeight(min_h)
+            if window.visibility() != QWindow.Windowed:
+                return
+            width = max(min_w, min(int(window.width()), max_w))
+            height = max(min_h, min(int(window.height()), max_h))
+            min_x = geo.x() + margin
+            min_y = geo.y() + margin
+            max_x = geo.x() + geo.width() - margin - width
+            max_y = geo.y() + geo.height() - margin - height
+            x = max(min_x, min(int(window.x()), max_x))
+            y = max(min_y, min(int(window.y()), max_y))
+            window.setGeometry(x, y, width, height)
+            log.info(
+                "qt.main_window.fit screen=%s geo=%sx%s%+d%+d window=%sx%s%+d%+d dpr=%.2f",
+                target.name(), geo.width(), geo.height(), geo.x(), geo.y(),
+                width, height, x, y, float(target.devicePixelRatio()),
+            )
+        except Exception:
+            log.exception("qt main window fit failed")
+
+    def _bind_main_window_screen(window, screen) -> None:
+        if screen is None:
+            return
+        bound = _qml_refs.setdefault("main_window_bound_screens", set())
+        key = id(screen)
+        if key in bound:
+            return
+        bound.add(key)
+        for signal_name in ("availableGeometryChanged", "geometryChanged", "logicalDotsPerInchChanged"):
+            try:
+                getattr(screen, signal_name).connect(
+                    lambda *_args, w=window: QTimer.singleShot(0, lambda: _fit_main_window_to_screen(w))
+                )
+            except Exception:
+                pass
 
     def _create_qml_shell():
         """构建 QML AppShell 主窗，并装配全部数据桥（persist=True 真落盘）。"""
@@ -969,6 +1068,16 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         root = roots[0]
         qml_root_ref["value"] = root
         main_window_ref["value"] = root
+        initial_screen = root.screen() or QGuiApplication.primaryScreen()
+        _bind_main_window_screen(root, initial_screen)
+        _fit_main_window_to_screen(root, initial_screen)
+        try:
+            def _on_main_screen_changed(screen):
+                _bind_main_window_screen(root, screen)
+                QTimer.singleShot(0, lambda: _fit_main_window_to_screen(root, screen))
+            root.screenChanged.connect(_on_main_screen_changed)
+        except Exception:
+            log.exception("qt main window screenChanged binding failed")
         try:
             from eye_care.version import APP_VERSION
             root.setProperty("appVersion", ("v" + APP_VERSION) if APP_VERSION else "")
@@ -1032,6 +1141,25 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     tray_ref["value"] = tray
     tray_started = tray.start()
     log.info("qt.tray.start_result ok=%s", tray_started)
+
+    # Controller 的自动模式在后台线程变化；用 GUI 线程轻量轮询同步托盘，避免跨线程操作 Qt 对象。
+    mode_poll = QTimer()
+    mode_poll.setInterval(500)
+    mode_cache = {"value": _tray_mode_from_state()}
+
+    def _sync_tray_mode_if_changed() -> None:
+        mode = _tray_mode_from_state()
+        if mode == mode_cache.get("value"):
+            return
+        mode_cache["value"] = mode
+        current_tray = tray_ref.get("value")
+        if current_tray is not None:
+            current_tray._set_mode_icon(mode)
+        log.info("qt.tray.mode_changed mode=%s", mode)
+
+    mode_poll.timeout.connect(_sync_tray_mode_if_changed)
+    mode_poll.start()
+    _qml_refs["mode_poll"] = mode_poll
 
     def _shutdown() -> None:
         tray = tray_ref.get("value")
