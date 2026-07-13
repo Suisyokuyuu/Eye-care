@@ -363,7 +363,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                     except Exception:
                         log.exception("qt.qml_notify_action start/show rest failed")
             elif act == "snooze":
-                # 通知上的「稍后」是明确用户选择：延后一个完整提醒周期。
+                # 通知上的「跳过本轮」是明确用户选择：等待一个完整提醒间隔后再提示下一轮。
                 try:
                     if controller is not None and is_natural_prompt:
                         controller.rest_snooze()
@@ -371,8 +371,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 except Exception:
                     log.exception("qt.qml_notify_action snooze failed")
             elif act in ("dismiss", "auto-close"):
-                # 关闭/自动消失也结束本轮提醒；再连续用眼一个完整间隔后才进入下一轮。
-                # 与「稍后」分开记录，避免把自动消失计入用户主动跳过统计。
+                # 关闭/自动消失也结束本轮提醒，等待一个完整提醒间隔后再提示下一轮。
+                # 与「跳过本轮」分开记录，避免把自动消失计入用户主动跳过统计。
                 try:
                     if controller is not None and is_natural_prompt:
                         controller.dismiss_rest_prompt()
@@ -395,7 +395,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
 
     # ───────────────────────── 休息全屏遮罩（QML 原生） ─────────────────────────
     def _qml_rest_finish(reason: str) -> None:
-        """rest 业务收尾：complete=倒计时到点，snooze=点「稍后」/Esc；随后关全部遮罩 + 释放守卫。"""
+        """rest 业务收尾：complete=倒计时到点，snooze=点「跳过本轮」/Esc；随后关全部遮罩 + 释放守卫。"""
         try:
             if controller is not None:
                 if reason == "complete":

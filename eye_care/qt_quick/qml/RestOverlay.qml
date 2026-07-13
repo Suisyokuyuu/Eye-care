@@ -6,7 +6,7 @@ import QtQuick.Effects
 // - 无边框 / 置顶 / Tool / 透明背景，磨砂由 Windows Acrylic（Python 侧 win_effects, tint 0x33101826）负责。
 // - 关键口径（沿用 web 版）：Web/QML 层不做模糊，只铺极淡暗色 + 半透明卡片；模糊全交给窗口级 Acrylic。
 // - 倒计时文本由 Python 每 250ms 写 timeText（与 web 一致，用墙钟算余量，避免计时漂移）。
-// - 拦截除「稍后」外的一切点击，防穿透到后面窗口。
+// - 拦截除「跳过本轮」外的一切点击，防穿透到后面窗口。
 // 契约：Python 读写 timeText / overlayVisible，监听 actionTriggered(name)，name 目前仅 "snooze"。
 Window {
     id: win
@@ -19,7 +19,7 @@ Window {
     property bool overlayVisible: false
     signal actionTriggered(string name)
 
-    // Esc = 稍后（沿用 web 版快捷键）
+    // Esc = 跳过本轮
     Shortcut { sequence: "Esc"; onActivated: win.actionTriggered("snooze") }
 
     Item {
@@ -33,7 +33,7 @@ Window {
             color: "#1A000000"
         }
 
-        // 吃掉非「稍后」的所有点击，防止穿透到后面的窗口
+        // 吃掉非「跳过本轮」的所有点击，防止穿透到后面的窗口
         MouseArea {
             anchors.fill: parent
             hoverEnabled: true
@@ -100,7 +100,7 @@ Window {
                 }
                 Item { width: 1; height: 16 }
 
-                // 「稍后」按钮（复刻 .btn.secondary 背景 #2d7dd2）
+                // 「跳过本轮」按钮（复刻 .btn.secondary 背景 #2d7dd2）
                 Rectangle {
                     id: snoozeBtn
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -111,7 +111,7 @@ Window {
                     Text {
                         id: snoozeTxt
                         anchors.centerIn: parent
-                        text: "稍后"
+                        text: "跳过本轮"
                         color: "#ffffff"
                         font.pixelSize: 14
                         font.bold: true

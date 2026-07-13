@@ -1,7 +1,7 @@
 """QML 全屏休息遮罩宿主。
 
 加载 RestOverlay.qml，负责：铺满指定屏幕、Windows Acrylic、淡入淡出、倒计时（墙钟驱动、
-每 250ms 刷 timeText）、到点自动完成、把「稍后」动作转回调。后端业务（rest_complete /
+每 250ms 刷 timeText）、到点自动完成、把「跳过本轮」动作转回调。后端业务（rest_complete /
 rest_snooze）由回调方接既有 controller，本类不碰业务——仅视图宿主 + 计时。
 
 每屏一个实例（与旧 RestOverlayWindow 一一对应）。QML 同步加载、无 channel 握手，
@@ -25,7 +25,7 @@ class QmlRestOverlay:
     参数：
       screen_idx: 屏序号（与 rest_overlays 列表下标一致）。
       screen: QScreen，决定铺满哪块屏。
-      on_snooze(): 点「稍后」或 Esc 时回调（业务：rest_snooze + 关全部 + 释放守卫）。
+      on_snooze(): 点「跳过本轮」或 Esc 时回调（业务：rest_snooze + 关全部 + 释放守卫）。
       on_complete(): 倒计时自然到点时回调（业务：放提示音 + rest_complete + 关全部）。
       win_effects: 可选，提供 enable_acrylic(hwnd, ...)；None 则跳过亚克力（仍可见，无毛玻璃）。
       log: 可选 logger。

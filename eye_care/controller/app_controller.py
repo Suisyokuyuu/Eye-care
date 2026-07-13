@@ -35,10 +35,6 @@ FLUSH_INTERVAL_S = 60
 CHECKPOINT_INTERVAL_S = 60 * 60
 # NOTE: checkpoint runs in background thread to avoid blocking tick loop.
 
-# 提醒冷却最小值：避免用户频繁 ESC/“稍后”导致提醒连发。
-# 口径：无论工作阈值多小，提醒之间至少相隔 60 秒。
-MIN_REMIND_COOLDOWN_S = 60
-
 # 全屏勿扰去抖（单位=tick，≈秒）：进入要连续 N 拍判为全屏才进勿扰；退出要连续 M 拍判为
 # 非全屏才退出。退出阈值更大，以吃掉前台短暂切换（通知/浮层/alt-tab 一闪）造成的瞬时非全屏，
 # 避免 dnd 反复横跳。
@@ -112,8 +108,8 @@ class AppController:
 
         # ---- rest reminder runtime (transient) ----
         # 口径：
-        # - 不对用户暴露“提醒冷却”设置；但 UI 的“稍后”需要一个内部 snooze。
-        # - 到点只弹一次，直到发生：休息开始/用户离开(Idle)/“跳过本轮”(下次阈值再弹)
+        # - 到点只弹一次；关闭、自动消失或“跳过本轮”后，等待一个完整提醒间隔再弹下一轮。
+        # - 完成休息/用户离开(Idle)后清零，并重新开始计算提醒周期。
         self._cont_work_s: int = 0
         self._rest_ack_work_s: int = 0  # 'skip this cycle' anchor
         # 休息轮次：每次连续用眼被清零（rest_complete）即 +1。通知去重键带上它，避免计时重置后
@@ -123,6 +119,8 @@ class AppController:
         self._rest_notified: bool = False
         self._rest_snooze_until: float = 0.0
         self._rest_next_prompt_work_s: int = 0  # next prompt work_s threshold
+        # 用户关闭、忽略或跳过后保护等待期，避免勿扰切换等状态变化提前放行下一轮。
+        self._rest_prompt_acknowledged: bool = False
         self._last_prompt_toast_shown: bool = False  # 本轮 due 是否已弹过系统通知，避免刷屏
 
         # 是否处于“休息中”（由 UI 的休息遮罩触发）。
@@ -463,7 +461,8 @@ class AppController:
         state.is_dnd = False
         state.force_idle = prev == "leave"
         with self._lock:
-            if self._rest_due:
+            # 勿扰结束只放行此前被勿扰挡住、尚未处理的提醒；不能覆盖用户已经做出的跳过/忽略选择。
+            if self._rest_due and not bool(getattr(self, "_rest_prompt_acknowledged", False)):
                 self._rest_notified = False
                 self._rest_next_prompt_work_s = 0
         self._emit_event(name="mode_set", payload={"mode": prev, "reason": previous_reason + "_leave"})
@@ -490,6 +489,7 @@ class AppController:
             # clear any pending snooze so overlay can complete normally
             self._rest_snooze_until = 0.0
             self._rest_next_prompt_work_s = 0
+            self._rest_prompt_acknowledged = True
         self._emit_event(name="rest_begin", payload={"ack_work_s": int(self._cont_work_s)})
 
     def rest_complete(self) -> None:
@@ -506,6 +506,7 @@ class AppController:
                 and (not bool(self._rest_due))
                 and (not bool(self._rest_notified))
                 and float(self._rest_snooze_until) <= 0.0
+                and (not bool(getattr(self, "_rest_prompt_acknowledged", False)))
             )
             if not already_completed:
                 self._is_resting = False
@@ -514,6 +515,8 @@ class AppController:
                 self._rest_due = False
                 self._rest_notified = False
                 self._rest_snooze_until = 0.0
+                self._rest_next_prompt_work_s = 0
+                self._rest_prompt_acknowledged = False
                 self._rest_cycle += 1  # 新一轮连续用眼，去重键随之翻新，使下一轮提醒能再次弹出
                 should_emit = True
         if should_emit:
@@ -524,40 +527,41 @@ class AppController:
     def rest_snooze(self) -> None:
         """User clicked '跳过/取消本轮休息'.
 
-        口径（按用户验收口径修复）：
+        口径：
         - 跳过不算完成：不清零连续用眼。
-        - 跳过后仍然保持"需要休息"状态（due=True），只是进入冷却，冷却后再次弹提醒。
+        - 从跳过时的连续用眼秒数起，再累计一个完整提醒间隔后进入下一轮。
         """
-        now = time.time()
+        try:
+            threshold_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
+        except Exception:
+            threshold_s = 20 * 60
+        next_interval_s = max(60, threshold_s)
         with self._lock:
             # if pressing ESC during overlay, exit resting state
             self._is_resting = False
             # keep _rest_due as-is (usually True when prompt fired)
-            # 标记为已提醒：避免冷却后每分钟连发；下一次提醒在"下一轮阈值"后再触发
+            # 明确记录用户已处理本轮，并从此刻重新累计一个完整提醒间隔。
             self._rest_notified = True
-            self._rest_snooze_until = float(now + MIN_REMIND_COOLDOWN_S)
-            # [FIX] 修复计算逻辑：点击"稍后"后，需要再工作一个完整的提醒间隔才再次提醒
-            # 旧逻辑：((int(self._cont_work_s) // 60) + 1) * 60 会导致只等1分钟就再次提醒
-            # 新逻辑：当前工作时间 + 提醒阈值，确保等待完整间隔
-            thr_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
-            self._rest_next_prompt_work_s = int(self._cont_work_s) + int(max(60, thr_s))
+            self._rest_snooze_until = 0.0
+            self._rest_next_prompt_work_s = int(self._cont_work_s) + next_interval_s
+            self._rest_prompt_acknowledged = True
 
         self._emit_event(name="rest_snooze", payload={"skip_cycle": True, "ack_work_s": int(self._cont_work_s)})
         # [FIX] 补偿进入：rest 结束后若用户仍 idle，补偿进入 auto_idle（但不 rollback）
         self._compensate_auto_idle_on_exit_rest()
 
     def dismiss_rest_prompt(self) -> None:
-        """关闭/忽略通知：本轮不再提示，继续用眼满一个完整间隔后再进入下一轮。"""
-        now = time.time()
+        """关闭/忽略通知：等待一个完整提醒间隔后再进入下一轮。"""
         try:
             threshold_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
         except Exception:
             threshold_s = 20 * 60
-        next_interval_s = max(MIN_REMIND_COOLDOWN_S, threshold_s)
+        next_interval_s = max(60, threshold_s)
         with self._lock:
             self._rest_notified = True
-            self._rest_snooze_until = float(now + MIN_REMIND_COOLDOWN_S)
+            self._rest_snooze_until = 0.0
             self._rest_next_prompt_work_s = int(self._cont_work_s) + next_interval_s
+            self._rest_prompt_acknowledged = True
         log.info("rest prompt dismissed; next prompt after full interval=%ss", next_interval_s)
 
     def notify_rest_entered(self) -> None:
@@ -641,6 +645,8 @@ class AppController:
             self._rest_due = True
             self._rest_notified = False
             self._rest_snooze_until = 0.0
+            self._rest_next_prompt_work_s = 0
+            self._rest_prompt_acknowledged = False
 
     def debug_set_work_s_to_threshold_minus_one(self) -> None:
         """调试：将连续用眼时间设为【休息阈值-1秒】，约 1 秒后会触发休息提醒。"""
@@ -651,6 +657,7 @@ class AppController:
             self._rest_notified = False
             self._rest_snooze_until = 0.0
             self._rest_next_prompt_work_s = 0
+            self._rest_prompt_acknowledged = False
 
     def on_config_updated(self) -> None:
         """Called after cfg is changed at runtime.
@@ -671,6 +678,7 @@ class AppController:
                 self._rest_notified = False
                 self._rest_snooze_until = 0.0
                 self._rest_next_prompt_work_s = 0
+                self._rest_prompt_acknowledged = False
 
         # 调用通知配置变更回调（如果已注册）
         if hasattr(self, "_notify_config_callback") and callable(self._notify_config_callback):
@@ -750,6 +758,7 @@ class AppController:
             notified = bool(self._rest_notified)
             snooze_until = float(self._rest_snooze_until)
             next_prompt_work_s = int(getattr(self, '_rest_next_prompt_work_s', 0) or 0)
+            prompt_acknowledged = bool(getattr(self, '_rest_prompt_acknowledged', False))
             rest_cycle = int(getattr(self, '_rest_cycle', 0) or 0)
             is_resting = bool(self._is_resting)
             thr_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
@@ -764,6 +773,8 @@ class AppController:
                 self._rest_notified = False
                 notified = False
                 self._rest_snooze_until = 0.0
+                self._rest_prompt_acknowledged = False
+                prompt_acknowledged = False
 
             should_prompt = False
             prompt_reason = ""
@@ -831,6 +842,7 @@ class AppController:
             "cycle": rest_cycle,
             "due": due,
             "notified": notified,
+            "prompt_acknowledged": prompt_acknowledged,
             "snooze_until": snooze_until,
             "should_prompt": should_prompt,
             "prompt_reason": prompt_reason,
@@ -877,13 +889,16 @@ class AppController:
         return vm, self._get_runtime_extra(mark_prompted=mark_prompted)
 
     def mark_rest_notified(self) -> None:
+        try:
+            threshold_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
+        except Exception:
+            threshold_s = 20 * 60
+        next_interval_s = max(60, threshold_s)
         with self._lock:
             self._rest_notified = True
-            try:
-                thr_s = int(getattr(self.cfg, "reminder_work_minutes", 20) or 20) * 60
-            except Exception:
-                thr_s = 20 * 60
-            self._rest_next_prompt_work_s = int(self._cont_work_s) + int(max(60, thr_s))
+            self._rest_snooze_until = 0.0
+            self._rest_next_prompt_work_s = int(self._cont_work_s) + next_interval_s
+            self._rest_prompt_acknowledged = True
 
     def get_app_paths(self) -> dict[str, str]:
         """获取 app_paths 字典。如果尚未加载完成，会等待最多2秒。
@@ -1118,6 +1133,7 @@ class AppController:
                                             self._rest_notified = False
                                             self._rest_snooze_until = 0.0
                                             self._rest_next_prompt_work_s = 0
+                                            self._rest_prompt_acknowledged = False
                                             self._rest_due = True
                         elif self.is_debug_notify() and (not fg_short):
                             log.info("debug: tick skip usage (no fg app)")

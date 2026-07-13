@@ -394,7 +394,7 @@ Window {
             {
                 rect: rightPanelItem.restBtnGlobalRect(),
                 title: "休息倒计时界面",
-                body: "点此按钮进入全屏休息倒计时。倒计时结束或点「稍后」后自动退出。",
+                body: "点此按钮进入全屏休息倒计时。倒计时结束或点「跳过本轮」后自动退出。",
                 side: "top"
             },
             {
@@ -432,7 +432,7 @@ Window {
                 // 用 cardAlign:"bottomRight" 让说明卡片固定到右下角，无聚光灯
                 rect: Qt.rect(-100, -100, 1, 1),
                 title: "休息提醒通知",
-                body: "到达设定间隔后，屏幕右下角弹出提醒气泡（已触发，请看屏幕右下角）。点「稍后」推迟，或「立刻休息」立即开始。",
+                body: "到达设定间隔后，屏幕右下角弹出提醒气泡（已触发，请看屏幕右下角）。点「跳过本轮」可停止本轮提醒，或点「立刻休息」立即开始。",
                 side: "bottom",
                 cardAlign: "bottomRight",
                 onEnter: function() { root._demoNotify(); }
