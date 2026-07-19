@@ -16,10 +16,8 @@ venv/
 /build/
 
 # local AI/editor metadata
-CLAUDE.md
 .cursor/
 .specstory/
-.agent/
 
 # IDE
 .vscode/
