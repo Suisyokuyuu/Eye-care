@@ -34,6 +34,30 @@ def _build_icon_resolver(controller, lg):
     return resolver
 
 
+def _build_domain_icon_resolver(controller, lg):
+    """造 domain → favicon data_url 的解析器 + 持有 FaviconService。
+
+    返回 `(resolver, service)`：resolver 供 LeftPanelBridge 注入（非阻塞，miss 返回 ""）；
+    service 需被外层持有（防 GC）并在退出时 `stop()`。构建失败 → `(None, None)`（domain 卡片走首字母兜底）。
+    FaviconService 是普通对象（非 QObject），缓存目录（domain_icons）在 data_dir 下由服务自管。
+    """
+    try:
+        from pathlib import Path
+        from eye_care.services.favicon_service import FaviconService
+        data_dir = Path(getattr(controller, "data_dir", "."))
+        service = FaviconService(data_dir, log=lg)
+    except Exception:
+        lg.warning("favicon 服务构建失败 → domain 卡片用首字母兜底", exc_info=True)
+        return None, None
+
+    def resolver(domain: str) -> str:
+        try:
+            return service.get_icon(domain) or ""
+        except Exception:
+            return ""
+    return resolver, service
+
+
 def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logger] = None,
                         today: Optional[str] = None, color_cache: Optional[dict] = None) -> dict:
     """用真实 controller 造齐 7 个桥 + provider。persist=True 真落盘；False=沙箱(写操作只 log)。"""
@@ -49,6 +73,7 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
     from eye_care.qt_quick.apps_bridge import AppsBridge, build_apps_io
     from eye_care.qt_quick.update_bridge import UpdateBridge, build_update_io
     from eye_care.qt_quick.calendar_bridge import CalendarBridge, build_calendar_io
+    from eye_care.qt_quick.sites_bridge import SitesBridge, build_sites_io
 
     if today is None:
         from datetime import date as _date
@@ -57,7 +82,9 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
 
     provider = make_provider(controller, lg)
     icon_resolver = _build_icon_resolver(controller, lg)
-    left = LeftPanelBridge(provider, today_str=today, color_cache=shared_colors, icon_resolver=icon_resolver)
+    domain_icon_resolver, favicon_service = _build_domain_icon_resolver(controller, lg)
+    left = LeftPanelBridge(provider, today_str=today, color_cache=shared_colors,
+                           icon_resolver=icon_resolver, domain_icon_resolver=domain_icon_resolver)
     right = RightPanelBridge(provider, today_str=today, color_cache=shared_colors)
 
     s_loader, s_saver = build_settings_io(controller, persist=persist, log=lg)
@@ -67,6 +94,10 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
     blacklist = BlacklistBridge(b_loader, b_remover)
 
     apps = AppsBridge(build_apps_io(controller, persist=persist, log=lg))
+
+    # 站点设置/详情桥：复用同一 favicon 解析器（共享 FaviconService，不另建）。
+    sites = SitesBridge(build_sites_io(controller, persist=persist, log=lg,
+                                       today=today, domain_icon_resolver=domain_icon_resolver))
 
     u_checker, u_opener = build_update_io(controller, lg)
     update = UpdateBridge(u_checker, u_opener)
@@ -81,13 +112,18 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
         "settingsBridge": settings,
         "blacklistBridge": blacklist,
         "appsBridge": apps,
+        "sitesBridge": sites,
         "updateBridge": update,
         "calendarBridge": calendar,
+        # FaviconService 非 QObject、不是 contextProperty（不在 CONTEXT_PROPERTY_NAMES）：
+        # 放进 dict 仅为防 GC + 供退出时 stop()。runtime_shell 循环 setContextProperty 只遍历
+        # CONTEXT_PROPERTY_NAMES，不会把它当 QObject 传给 QML。
+        "_faviconService": favicon_service,
     }
 
 
 # AppShell.qml 需要的 contextProperty 名（runtime_shell 接线时核对用；provider 不是 contextProperty）。
 CONTEXT_PROPERTY_NAMES = (
     "leftPanelBridge", "rightPanelBridge", "settingsBridge", "blacklistBridge",
-    "appsBridge", "updateBridge", "calendarBridge",
+    "appsBridge", "sitesBridge", "updateBridge", "calendarBridge",
 )

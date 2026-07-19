@@ -39,6 +39,7 @@ _SETTINGS_KEYS = (
     "rest_end_sound_enabled",
     "fullscreen_dnd",
     "show_onboarding",
+    "record_browser_enabled",
 )
 
 
@@ -57,7 +58,7 @@ def sanitize(payload: dict) -> dict:
     # 布尔
     for k in ("startup_launch_at_login", "startup_dnd", "startup_show_main",
               "notify_enabled", "notify_sound_enabled", "rest_end_sound_enabled",
-              "fullscreen_dnd"):
+              "fullscreen_dnd", "record_browser_enabled"):
         if k in p:
             out[k] = bool(p[k])
     # 无操作暂停 3..300
@@ -108,6 +109,9 @@ def cfg_to_dict(cfg) -> dict:
         "rest_end_sound_enabled": bool(g("rest_end_sound_enabled", True)),
         "fullscreen_dnd": bool(g("fullscreen_dnd", True)),
         "show_onboarding": bool(g("show_onboarding", True)),
+        # 隐私默认关：老配置文件无此键 / 读取失败时兜底 False（与 fullscreen_dnd 的
+        # True 口径相反，不能照抄）。
+        "record_browser_enabled": bool(g("record_browser_enabled", False)),
     }
 
 

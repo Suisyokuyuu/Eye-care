@@ -25,8 +25,10 @@ def make_provider(controller, log: Optional[logging.Logger] = None) -> Callable[
     svc = SnapshotService(ServiceContext(controller=controller, log=log or logging.getLogger(__name__)))
 
     def provider(range_key: str, date: Optional[str] = None,
-                 range_start: Optional[str] = None, range_end: Optional[str] = None) -> dict:
-        query = {"range": range_key}
+                 range_start: Optional[str] = None, range_end: Optional[str] = None,
+                 *, dim: str = "app") -> dict:
+        # dim 为 keyword-only：保持向后兼容——不带 dim 的旧调用（如 left_panel_bridge）不受影响。
+        query = {"range": range_key, "dim": dim}
         if date:
             query["date"] = date
         if range_key == "custom":

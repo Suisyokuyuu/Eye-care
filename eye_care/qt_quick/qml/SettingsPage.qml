@@ -36,6 +36,7 @@ Item {
     property bool restEndSound: true
     property bool fullscreenDnd: true    // 前台全屏时自动勿扰（默认开）
     property bool showOnboarding: true   // true=启动显示引导
+    property bool recordBrowser: false   // 记录浏览器 domain 统计（隐私默认关）
 
     // 引导用矩形：未勾选休息提醒时的紧凑卡片（约 600px 高，无休息设置组）
     function cardCompactRect() {
@@ -75,6 +76,7 @@ Item {
         restEndSound   = c.rest_end_sound_enabled !== false;
         fullscreenDnd  = c.fullscreen_dnd !== false;
         showOnboarding = c.show_onboarding !== false;
+        recordBrowser  = c.record_browser_enabled === true;
     }
     function _buildPayload() {
         var restSec = (restUnit === "min") ? restDuration * 60 : restDuration;
@@ -92,7 +94,8 @@ Item {
             "notify_sound_enabled": notifySound,
             "rest_end_sound_enabled": restEndSound,
             "fullscreen_dnd": fullscreenDnd,
-            "show_onboarding": showOnboarding
+            "show_onboarding": showOnboarding,
+            "record_browser_enabled": recordBrowser
         };
     }
     function applyAndClose() {
@@ -244,6 +247,13 @@ Item {
                         Layout.fillWidth: true; spacing: 6
                         Check { text: "全屏时自动勿扰"; checked: page.fullscreenDnd; onToggled: page.fullscreenDnd = v }
                         HelpText { text: "检测到前台应用进入全屏（如游戏 / 全屏视频）时自动切换到勿扰模式，退出全屏后自动恢复。" }
+
+                        Check { text: "记录浏览器数据（仅域名）"; checked: page.recordBrowser; onToggled: page.recordBrowser = v }
+                        Text {
+                            text: "开启后左栏显示「浏览器」页签。仅记录网站域名（如 baidu.com），不记录完整网址与页面标题。"
+                            color: "#94a3b8"; font.pixelSize: 12
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
                     }
 
                     Divider {}

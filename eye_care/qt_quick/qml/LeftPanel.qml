@@ -17,8 +17,10 @@ Item {
     property string highlightKey: ""        // 外部联动高亮（app 名；宿主把左右栏串起来）
     signal highlight(string key)            // 本栏 hover（饼图/卡片）外发，""=离开
     signal periodSelected(string period)    // 周期切换外发，宿主用来同步右栏
+    signal viewSelected(string view)        // 视图切换外发（app/category/browser），宿主用来同步右栏维度
     signal calendarRequested()              // 点日历按钮外发，宿主打开日期选择器
     signal appActivated(string key, bool isCategory)  // 点应用/分类卡片外发，宿主打开详情
+    signal siteActivated(string siteKey)    // 点浏览器域名卡片外发，宿主打开站点详情
     signal stepDay(int delta)               // 日期 ◀▶（±1 天）外发，宿主同步左右栏
 
     // 返回视图 tab 行在窗口坐标系中的矩形（供引导覆盖层定位聚光灯）
@@ -72,13 +74,22 @@ Item {
     property int viewTab: 0     // 0=应用 1=分类
     property int periodTab: 0   // 0=日 1=周 2=月
     function _periodStr(t) { return t === 1 ? "week" : (t === 2 ? "month" : "day"); }
-    onViewTabChanged: panel.bridge.setView(viewTab === 1 ? "category" : "app")
+    onViewTabChanged: {
+        var v = viewTab === 2 ? "browser" : viewTab === 1 ? "category" : "app";
+        panel.bridge.setView(v);
+        panel.viewSelected(v);
+    }
     onPeriodTabChanged: { panel.bridge.setPeriod(_periodStr(periodTab)); panel.periodSelected(_periodStr(periodTab)); }
 
     // 仅切视图/周期重播饼图入场（复刻 web chartViewEnter）；普通刷新(10s 轮询)只更新数据不重播。
     Connections {
         target: panel.bridge
         function onResetAnim() { pie.playEnter() }
+        // 浏览器统计被关（设置翻关）→ 若正停在「浏览器」页签则回退「应用」，避免停在已隐藏的页签上。
+        function onDataChanged() {
+            if (panel.viewTab === 2 && panel.bridge && !panel.bridge.browserEnabled)
+                panel.viewTab = 0
+        }
     }
 
     // 面板外壳（复刻 panel-gradient-left）
@@ -146,6 +157,7 @@ Item {
                         x: 2; y: 2; spacing: 4
                         PillTab { label: "应用"; active: panel.viewTab === 0; onClicked: panel.viewTab = 0 }
                         PillTab { label: "分类"; active: panel.viewTab === 1; onClicked: panel.viewTab = 1 }
+                        PillTab { label: "浏览器"; visible: panel.bridge ? panel.bridge.browserEnabled : false; active: panel.viewTab === 2; onClicked: panel.viewTab = 2 }
                     }
                 }
                 Item { Layout.fillWidth: true }
@@ -227,7 +239,7 @@ Item {
                     required property int index
                     readonly property var modelData: (panel.bridge && index >= 0 && index < panel.bridge.appList.length)
                         ? panel.bridge.appList[index]
-                        : ({ name: "", key: "", isCategory: false, dur: "", pct: 0, sec: 0, r: 0, g: 0, b: 0, icon: "" })
+                        : ({ name: "", key: "", isCategory: false, isDomain: false, dur: "", pct: 0, sec: 0, r: 0, g: 0, b: 0, icon: "" })
                     // 联动高亮：本卡 app 名 == 当前高亮 key（饼图/柱状图 hover 也会点亮它，复刻 web .card-focus）
                     readonly property bool hl: modelData.name === panel.highlightKey && panel.highlightKey !== ""
                     // 右侧留出 8px 滚动条 + 4px 间距，避免条压住卡片（web pr-1 同理）
@@ -241,7 +253,11 @@ Item {
                     MouseArea {
                         id: rowMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onContainsMouseChanged: panel.highlight(containsMouse ? modelData.name : "")
-                        onClicked: panel.appActivated(modelData.key, modelData.isCategory === true)
+                        // domain 卡片 → 打开站点详情（key=site_key）；应用/分类 → 应用/分类详情
+                        onClicked: {
+                            if (modelData.isDomain === true) panel.siteActivated(modelData.key)
+                            else panel.appActivated(modelData.key, modelData.isCategory === true)
+                        }
                     }
 
                     RowLayout {

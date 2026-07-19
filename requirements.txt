@@ -15,6 +15,10 @@ psutil==7.2.2
 # Windows API wrappers
 pywin32==311
 
+# UI Automation COM 客户端 —— 读浏览器地址栏 URL（浏览器 domain 统计，probes/win_browser_url.py）。
+# 仅在 Windows 运行期使用；缺失时探针自动降级为 no-op，不影响其余功能。
+comtypes==1.4.11
+
 # PyInstaller (for packaging)
 pyinstaller==6.19.0
 pyinstaller-hooks-contrib==2026.1

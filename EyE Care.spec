@@ -52,10 +52,20 @@ a = Analysis(
         'eye_care.qt_quick.settings_bridge',
         'eye_care.qt_quick.blacklist_bridge',
         'eye_care.qt_quick.apps_bridge',
+        'eye_care.qt_quick.sites_bridge',
         'eye_care.qt_quick.update_bridge',
         'eye_care.qt_quick.calendar_bridge',
         'eye_care.qt_quick.notify_overlay',
         'eye_care.qt_quick.rest_overlay',
+        # 浏览器 domain 统计（2026-07）：UIA 探针 + favicon 服务（函数内延迟 import，显式收进 PYZ）。
+        # comtypes 由 pyinstaller-hooks-contrib 的钩子处理 frozen 下的 comtypes.gen 接口缓存。
+        'comtypes',
+        'comtypes.client',
+        'eye_care.probes.browser_url',
+        'eye_care.probes.win_browser_url',
+        'eye_care.services.favicon_service',
+        # 站点归并规则（展示层）：仅函数内延迟 import（snapshot_service/api.common/sites_bridge），显式收进 PYZ。
+        'eye_care.utils.site_rules',
     ],
     hookspath=[],
     hooksconfig={},

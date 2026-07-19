@@ -74,6 +74,7 @@ class RightPanelBridge(QObject):
         self._date: Optional[str] = None   # 锚定日期（日历选择）
         self._range: Optional[tuple] = None  # 自定义范围 (start,end)；日历选范围 → setRange
         self._period = "day"
+        self._dim = "app"                   # 时段柱状图 + Top4 维度：app | category | browser（跟随左栏视图）
         self._snap: dict = {}
         self._key_color_cache: dict = color_cache if color_cache is not None else {}
         # 计算结果
@@ -84,6 +85,7 @@ class RightPanelBridge(QObject):
         self._y_ticks: list = []
         self._use_hours = False
         self._top4: list = []
+        self._top4_sig: list = []   # Top4 可见签名（并入 dim），避免同内容/空↔空切维度不换对象
         self._total_text = "—"
         self._focus_text = "—"
         self._rate_text = "—"
@@ -106,6 +108,21 @@ class RightPanelBridge(QObject):
             self._range = None
             self._recompute()
             self.resetAnim.emit()  # 切周期 → 重播柱状图入场
+
+    @Slot(str)
+    def setDim(self, dim: str) -> None:
+        """柱状图/Top4 维度切换（跟随左栏视图：应用/分类/浏览器）。仿 setPeriod。"""
+        d = str(dim or "").lower()
+        if d.startswith("bro"):
+            d = "browser"
+        elif d.startswith("cat"):
+            d = "category"
+        else:
+            d = "app"
+        if d != self._dim:
+            self._dim = d
+            self._recompute()
+            self.resetAnim.emit()  # 切维度 → 重播柱状图入场
 
     @Slot(str)
     def setDate(self, date: str) -> None:
@@ -148,11 +165,12 @@ class RightPanelBridge(QObject):
     def _recompute(self) -> None:
         try:
             if self._range:
-                self._snap = self._provider("custom", None, self._range[0], self._range[1]) or {}
+                self._snap = self._provider("custom", None, self._range[0], self._range[1], dim=self._dim) or {}
             else:
-                self._snap = (self._provider(self._period, self._date) if self._date
-                              else self._provider(self._period)) or {}
+                self._snap = (self._provider(self._period, self._date, dim=self._dim) if self._date
+                              else self._provider(self._period, dim=self._dim)) or {}
         except TypeError:
+            # provider 为旧签名（不接受 dim keyword，异常降级路径）→ 退回不带 dim 的调用
             self._snap = self._provider(self._period) or {}
         except Exception:
             log.exception("right panel snapshot provider failed")
@@ -220,8 +238,16 @@ class RightPanelBridge(QObject):
         is_range = rk in ("week", "month", "custom")
         names = snap.get("display_names") or {}
         paths = snap.get("app_paths") or {}
+        # 实际维度以 snapshot 回写的 timebar_dim 为准（browser 开关关时后端已回退 app，
+        # 用回退后的值让柱状图与 Top4 维度一致）。
+        eff_dim = str(snap.get("timebar_dim") or self._dim or "app").lower()
+        # 站点显示名别名（key=site_key）：仅在最终打标签处套用，颜色键仍用 site_key。
+        site_overrides = snap.get("site_display_overrides") or {}
 
         def short_name(k):
+            # browser 维度：site_key 套显示名（无则原域名），不走 app 名解析（避免 strip .exe 等副作用/误配）。
+            if eff_dim == "browser":
+                return site_overrides.get(k) or k
             # 与左栏完全一致的解析（统一联动 key，修复 tabby 等大小写不匹配导致的联动失效）
             return resolve_app_name(k, names, paths)
 
@@ -259,14 +285,22 @@ class RightPanelBridge(QObject):
         # 柱高按**分钟粒度**比较——几秒的累加不改变观感却会逼着每拍重建，故按分钟判定是否真变。
         if disp_labels != self._bar_labels:
             self._bar_labels = disp_labels
-        series_sig = [(s["name"], s["key"], s["r"], s["g"], s["b"], tuple(int(v) // 60 for v in s["values"])) for s in series]
+        # 签名并入 eff_dim：两维度数据恰好相同（尤其空↔空）时切维度也强制换对象，QML 才会重绘。
+        series_sig = [eff_dim] + [(s["name"], s["key"], s["r"], s["g"], s["b"], tuple(int(v) // 60 for v in s["values"])) for s in series]
         if series_sig != self._bar_series_sig:
             self._bar_series_sig = series_sig
             self._bar_series = series
 
-        # ── Top4 分布（app 视图用量，与饼图同色）──
-        usage = (snap.get("range_daily_usage") if is_range else None) \
-            or ((snap.get("vm") or {}).get("daily_usage")) or {}
+        # ── Top4 分布（跟随维度：app=应用用量 / category=分类用量 / browser=domain 用量，与饼图同色）──
+        if eff_dim == "browser":
+            usage = (snap.get("range_browser_domains") if is_range else None) \
+                or snap.get("browser_domains") or {}
+        elif eff_dim == "category":
+            usage = (snap.get("range_usage_by_category") if is_range else None) \
+                or snap.get("usage_by_category") or {}
+        else:
+            usage = (snap.get("range_daily_usage") if is_range else None) \
+                or ((snap.get("vm") or {}).get("daily_usage")) or {}
         top_items = sorted(((k, int(v or 0)) for k, v in usage.items()),
                            key=lambda kv: kv[1], reverse=True)[:4]
         used4: list = []
@@ -276,7 +310,9 @@ class RightPanelBridge(QObject):
             used4.append((r, g, b))
             top4.append({"name": short_name(k), "val": format_work_time(sec),
                          "r": r, "g": g, "b": b})
-        if top4 != self._top4:
+        top4_sig = [eff_dim] + [(t["name"], t["val"], t["r"], t["g"], t["b"]) for t in top4]
+        if top4_sig != self._top4_sig:
+            self._top4_sig = top4_sig
             self._top4 = top4
 
         # ── KPI ──

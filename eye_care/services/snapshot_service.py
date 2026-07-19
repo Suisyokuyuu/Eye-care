@@ -37,6 +37,14 @@ class SnapshotService:
         if range_arg not in ("day", "week", "month", "custom"):
             range_arg = "day"
 
+        # 时段柱状图维度：app | category | browser。非法值回退 app；
+        # browser 维度但「记录浏览器数据」开关关 → 回退 app（无 domain 数据可显示）。
+        dim_arg = str(query.get("dim", "app") or "app").strip().lower()
+        if dim_arg not in ("app", "category", "browser"):
+            dim_arg = "app"
+        if dim_arg == "browser" and not bool(getattr(controller.cfg, "record_browser_enabled", False)):
+            dim_arg = "app"
+
         if date_arg and isinstance(date_arg, str) and date_arg.strip():
             vm, extra = controller.snapshot_for_date(date_arg.strip())
         else:
@@ -63,13 +71,13 @@ class SnapshotService:
         stats = _stats_for_date(controller, local_date)
 
         range_start = range_end = local_date
-        timebar_labels, timebar_keys, timebar_values = _timebars_for_day(controller, local_date)
+        timebar_labels, timebar_keys, timebar_values = _timebars_for_day(controller, local_date, dim=dim_arg)
         if range_arg == "week":
             dt = datetime.strptime(local_date, "%Y-%m-%d").date()
             start_d = dt - timedelta(days=dt.weekday())
             end_d = start_d + timedelta(days=6)
             range_start, range_end = start_d.isoformat(), end_d.isoformat()
-            timebar_labels, timebar_keys, timebar_values = _timebars_for_range(controller, "week", range_start, range_end)
+            timebar_labels, timebar_keys, timebar_values = _timebars_for_range(controller, "week", range_start, range_end, dim=dim_arg)
         elif range_arg == "month":
             from calendar import monthrange
 
@@ -77,7 +85,7 @@ class SnapshotService:
             _, last = monthrange(dt.year, dt.month)
             range_start = dt.replace(day=1).isoformat()
             range_end = dt.replace(day=last).isoformat()
-            timebar_labels, timebar_keys, timebar_values = _timebars_for_range(controller, "month", range_start, range_end)
+            timebar_labels, timebar_keys, timebar_values = _timebars_for_range(controller, "month", range_start, range_end, dim=dim_arg)
         elif range_arg == "custom":
             from datetime import date as _date
 
@@ -91,7 +99,7 @@ class SnapshotService:
             if re_ < rs:
                 rs, re_ = re_, rs
             range_start, range_end = rs, re_
-            timebar_labels, timebar_keys, timebar_values = _timebars_for_range(controller, "custom", range_start, range_end)
+            timebar_labels, timebar_keys, timebar_values = _timebars_for_range(controller, "custom", range_start, range_end, dim=dim_arg)
 
         range_usage_by_category = usage_by_category
         range_daily_usage = vm.daily_usage
@@ -129,6 +137,26 @@ class SnapshotService:
         all_app_keys.update(filtered_daily.keys())
         display_names = {k: controller.get_display_name(k) for k in all_app_keys} if hasattr(controller, "get_display_name") else {}
 
+        # 浏览器 domain 统计（展示层）：关闭时零 repo 调用，browser_domains/range_browser_domains 均为 {}。
+        # 展示层归并：把原始子域名按 site_key 合并到主域名（独立名单里的子站点除外）。
+        # 归并只发生在读取展示，底层存储/采集不变，故规则变更可回溯历史数据。
+        record_browser_enabled = bool(getattr(controller.cfg, "record_browser_enabled", False))
+        site_independent = list(getattr(controller.cfg, "site_independent_hosts", None) or [])
+        site_display_overrides = dict(getattr(controller.cfg, "site_display_overrides", None) or {})
+        if record_browser_enabled:
+            from eye_care.utils.site_rules import merge_domain_usage
+            browser_domains = merge_domain_usage(
+                controller.repo.get_daily_domain_usage(local_date), site_independent)
+            if range_arg in ("week", "month", "custom"):
+                dr_browser = DateRange(start_local_date=range_start, end_local_date=range_end)
+                range_browser_domains = merge_domain_usage(
+                    controller.repo.get_domain_usage_range(dr_browser), site_independent)
+            else:
+                range_browser_domains = browser_domains
+        else:
+            browser_domains = {}
+            range_browser_domains = browser_domains
+
         payload = {
             "api_version": API_VERSION,
             "vm": vm_dict,
@@ -153,8 +181,14 @@ class SnapshotService:
             "timebar_labels": timebar_labels,
             "timebar_keys": timebar_keys,
             "timebar_values": timebar_values,
+            "timebar_dim": dim_arg,
             "today_total_seconds": today_total_seconds,
             "display_names": display_names,
+            "record_browser_enabled": record_browser_enabled,
+            "browser_domains": browser_domains,
+            "range_browser_domains": range_browser_domains,
+            # 站点显示名别名（key=site_key）：左右栏 browser 分支在最终打标签处套用。
+            "site_display_overrides": site_display_overrides,
         }
 
         rest = payload["rest"]

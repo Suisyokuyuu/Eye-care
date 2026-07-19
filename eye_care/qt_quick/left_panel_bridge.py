@@ -186,6 +186,7 @@ class LeftPanelBridge(QObject):
         today_str: Optional[str] = None,
         color_cache: Optional[dict] = None,
         icon_resolver: Optional[Callable[[str], str]] = None,
+        domain_icon_resolver: Optional[Callable[[str], str]] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -194,9 +195,12 @@ class LeftPanelBridge(QObject):
         self._icon_resolver = icon_resolver   # app_short → data_url（""=无图标）；生产注入，预览/mock 可 None
         self._icon_cache: dict = {}           # app_short → data_url（非空才缓存）
         self._icon_miss_count: dict = {}      # app_short → 连续失败次数；超上限后停止重试
+        self._domain_icon_resolver = domain_icon_resolver  # domain → favicon data_url（""=无/未命中）；生产注入
+        self._domain_icon_cache: dict = {}    # domain → data_url（非空才缓存）
+        self._domain_icon_miss: dict = {}     # domain → 连续失败次数；超上限后停止重试
         self._date: Optional[str] = None   # 锚定日期（None=今天）；日历选择 → setDate
         self._range: Optional[tuple] = None  # 自定义范围 (start,end)；日历选范围 → setRange（覆盖 period/date）
-        self._view = "app"        # app | category
+        self._view = "app"        # app | category | browser
         self._period = "day"      # day | week | month
         self._snap: dict = {}
         # key→(r,g,b)，跨视图/周期保持同 key 同色；传入共享 dict 可让左右栏跨面板同色（生产用）。
@@ -214,7 +218,13 @@ class LeftPanelBridge(QObject):
     # ── QML 调用入口 ──────────────────────────────────────────────────────
     @Slot(str)
     def setView(self, view: str) -> None:
-        view = "category" if str(view).lower().startswith("cat") else "app"
+        v = str(view).lower()
+        if v.startswith("bro"):
+            view = "browser"
+        elif v.startswith("cat"):
+            view = "category"
+        else:
+            view = "app"
         if view != self._view:
             self._view = view
             self._render()        # 同一 snapshot 换视图，无需重新取数
@@ -330,10 +340,21 @@ class LeftPanelBridge(QObject):
 
     def _render(self) -> None:
         snap = self._snap or {}
+        # 浏览器统计关闭时若仍停在 browser 视图（如设置刚翻关）→ 回退 app 视图正常渲染。
+        if self._view == "browser" and not bool(snap.get("record_browser_enabled")):
+            self._view = "app"
         rk = snap.get("range_key", self._period)
         is_range = rk in ("week", "month", "custom")
 
-        if self._view == "category":
+        # 站点显示名别名（key=site_key）：数据键已在 snapshot 层按 site_key 归并，
+        # 这里只在最终打标签处套显示名（无则原域名），保证图标/颜色仍按 site_key 走。
+        site_overrides = snap.get("site_display_overrides") or {}
+        if self._view == "browser":
+            usage = (snap.get("range_browser_domains") if is_range else None) \
+                or snap.get("browser_domains") or {}
+            names = None         # domain 原样，不查 display_names
+            paths = {}
+        elif self._view == "category":
             usage = (snap.get("range_usage_by_category") if is_range else None) \
                 or snap.get("usage_by_category") or {}
             names = None         # 分类名即 key
@@ -352,8 +373,10 @@ class LeftPanelBridge(QObject):
         items = []
         for key, raw in usage.items():
             sec = int(raw or 0)
-            if self._view == "category":
-                name = key
+            if self._view == "browser":
+                name = site_overrides.get(key) or key   # site_key 显示名（无则原域名）
+            elif self._view == "category":
+                name = key   # 分类名即 key
             else:
                 name = resolve_app_name(key, names, paths)  # 与右栏柱图统一，保证联动 key 一致
             pct = (100.0 * sec / total_sec) if total_sec > 0 else 0.0
@@ -374,6 +397,7 @@ class LeftPanelBridge(QObject):
         _PIE_TOP_N = 10
         _PIE_PCT_MIN = 3.0
         is_cat = (self._view == "category")
+        is_browser = (self._view == "browser")
         pie_displayed: list = []
         other_sec = 0
         for it in items:
@@ -399,9 +423,11 @@ class LeftPanelBridge(QObject):
 
         app_list = [
             {"name": it["name"], "key": it["key"], "isCategory": is_cat,
+             "isDomain": is_browser,
              "dur": it["dur"], "pct": round(it["pct"]),
              "sec": it["sec"], "r": it["r"], "g": it["g"], "b": it["b"],
-             "icon": ("" if is_cat else self._icon_for(it["key"]))}
+             "icon": (self._domain_icon_for(it["key"]) if is_browser
+                      else ("" if is_cat else self._icon_for(it["key"])))}
             for it in items
         ]
         top_lines = [
@@ -417,9 +443,12 @@ class LeftPanelBridge(QObject):
         # 仅当**可见内容**变化才重赋值+发信号；否则跳过，避免每 10s 整模型替换、QML 拆建 delegate
         # （偶发"重绘只剩一条"的根因）。可见签名故意**不含原始秒数**（modelData.sec 在左栏列表未被使用，
         # 饼图角度按 1% 粒度即够）——只看 名称/时长文案/取整百分比/图标/顺序/总时长，几秒累加不触发刷新。
+        # browserEnabled 必须进签名：开关翻转但列表内容恰好不变（如两边皆空）时，
+        # 否则 return 会吞掉 dataChanged → QML「浏览器」页签显隐不更新。
+        browser_enabled = bool(snap.get("record_browser_enabled"))
         sig = (
             tuple((it["name"], it["dur"], round(it["pct"]), it.get("icon", "")) for it in app_list),
-            total_text, summary_title, date_text,
+            total_text, summary_title, date_text, browser_enabled,
         )
         if sig == self._render_sig:
             return
@@ -453,6 +482,29 @@ class LeftPanelBridge(QObject):
             self._icon_miss_count[key] = self._icon_miss_count.get(key, 0) + 1
         return url
 
+    def _domain_icon_for(self, domain: str) -> str:
+        """domain → favicon data_url（带缓存；无 resolver / 取不到 → ""）。
+
+        与 `_icon_for` 同构：成功永久缓存；未命中允许重试，超 _ICON_MAX_RETRIES 次后
+        本 session 放弃（FaviconService.get_icon 非阻塞，miss 会异步入队，下拍多半已抓到）。
+        """
+        if not self._domain_icon_resolver:
+            return ""
+        if domain in self._domain_icon_cache:
+            return self._domain_icon_cache[domain]
+        if self._domain_icon_miss.get(domain, 0) >= _ICON_MAX_RETRIES:
+            return ""
+        try:
+            url = self._domain_icon_resolver(domain) or ""
+        except Exception:
+            url = ""
+        if url:
+            self._domain_icon_cache[domain] = url
+            self._domain_icon_miss.pop(domain, None)
+        else:
+            self._domain_icon_miss[domain] = self._domain_icon_miss.get(domain, 0) + 1
+        return url
+
     # ── QML 可绑定属性 ────────────────────────────────────────────────────
     @Property("QVariantList", notify=dataChanged)
     def pieModel(self):
@@ -482,3 +534,8 @@ class LeftPanelBridge(QObject):
     @Property(str, notify=dataChanged)
     def dateText(self):
         return self._date_text
+
+    @Property(bool, notify=dataChanged)
+    def browserEnabled(self):
+        """浏览器 domain 统计是否开启（设置 record_browser_enabled）——QML「浏览器」页签显隐用。"""
+        return bool(self._snap.get("record_browser_enabled"))

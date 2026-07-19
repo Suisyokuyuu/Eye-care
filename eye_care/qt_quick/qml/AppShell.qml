@@ -189,6 +189,7 @@ Window {
                 highlightKey: root.hlKey
                 onHighlight: function(key) { root.hlKey = key; }
                 onPeriodSelected: function(period) { rightPanelBridge.setPeriod(period); }
+                onViewSelected: function(view) { rightPanelBridge.setDim(view); }
                 onCalendarRequested: calendarPage.open = true
                 onStepDay: function(delta) { leftPanelBridge.stepDay(delta); rightPanelBridge.stepDay(delta); }
                 // 点应用卡片→应用详情；点分类卡片→分类详情
@@ -196,6 +197,8 @@ Window {
                     if (isCategory) { categoryDetailPage.category = key; categoryDetailPage.open = true; }
                     else { appsBridge.openDetail(key); appDetailPage.open = true; }
                 }
+                // 点浏览器域名卡片→站点详情
+                onSiteActivated: function(siteKey) { sitesBridge.openSite(siteKey); siteDetailPage.open = true; }
             }
             RightPanel {
                 id: rightPanelItem
@@ -236,13 +239,23 @@ Window {
         id: appSettingsPage
         anchors.fill: parent
         bridge: appsBridge
+        sitesRef: sitesBridge
+        browserEnabled: leftPanelBridge.browserEnabled
         onClosed: open = false
         onOpenApp: function(appShort) { appsBridge.openDetail(appShort); appDetailPage.open = true; }
+        onOpenSite: function(siteKey) { sitesBridge.openSite(siteKey); siteDetailPage.open = true; }
     }
     AppDetailPage {
         id: appDetailPage
         anchors.fill: parent
         bridge: appsBridge
+        onClosed: open = false
+    }
+    // ── 站点详情（浏览器站点归并；从网站页签或左栏域名卡片打开）──
+    SiteDetailPage {
+        id: siteDetailPage
+        anchors.fill: parent
+        bridge: sitesBridge
         onClosed: open = false
     }
 

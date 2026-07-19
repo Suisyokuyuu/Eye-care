@@ -22,6 +22,9 @@ def load_config(path: Path) -> AppConfig:
             ("app_display_overrides", {}),
             ("app_auto_dnd_on_focus", {}),
             ("blacklist_apps", []),
+            # 站点显示名别名（key=site_key）。site_independent_hosts 不列此处——其默认
+            # 非空（预置 Google 三件套），交给 dataclass default_factory 兜底，避免被 [] 覆盖。
+            ("site_display_overrides", {}),
         ):
             if key not in filtered:
                 filtered[key] = default

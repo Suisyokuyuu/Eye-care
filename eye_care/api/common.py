@@ -92,15 +92,33 @@ def _top_keys(usage: dict, top_n: int = 10, pct_threshold: float = 3.0):
     return result
 
 
-def _timebars_for_day(controller, local_date: str):
-    """按小时、按应用堆叠条数据：labels(0-23), keys(top10/5%+其他), values(24 x n)。"""
+def _timebars_for_day(controller, local_date: str, dim: str = "app"):
+    """按小时堆叠条数据：labels(0-23), keys(top10/5%+其他), values(24 x n)。
+    dim: app | category | browser —— 决定 top keys 与每小时分布的数据源（其余逻辑不变）。"""
+    from eye_care.data.repository import DateRange
     repo = controller.repo
-    daily = repo.get_daily_usage(local_date)
+    dim = (dim or "app").lower()
+    # 站点归并（展示层）：browser 维度把原始子域名按 site_key 合并到主域名。
+    site_independent = list(getattr(getattr(controller, "cfg", None), "site_independent_hosts", None) or [])
+    # top keys 数据源按 dim
+    if dim == "browser":
+        from eye_care.utils.site_rules import merge_domain_usage
+        daily = repo.get_daily_domain_usage(local_date) if hasattr(repo, "get_daily_domain_usage") else {}
+        daily = merge_domain_usage(daily, site_independent)
+    elif dim == "category":
+        daily = repo.get_usage_range(DateRange(local_date, local_date), dim="category") if hasattr(repo, "get_usage_range") else {}
+    else:
+        daily = repo.get_daily_usage(local_date)
     top_items = _top_keys(daily or {})
     keys = top_items + ["其他"]
     if not keys:
         keys = ["其他"]
-    bd = repo.get_hourly_breakdown(local_date, dim="app") if hasattr(repo, "get_hourly_breakdown") else {}
+    # 每小时分布数据源按 dim
+    if dim == "browser":
+        bd = repo.get_hourly_domain_breakdown(local_date) if hasattr(repo, "get_hourly_domain_breakdown") else {}
+        bd = {h: merge_domain_usage(inner, site_independent) for h, inner in (bd or {}).items()}
+    else:
+        bd = repo.get_hourly_breakdown(local_date, dim=dim) if hasattr(repo, "get_hourly_breakdown") else {}
     rows = []
     for h in range(24):
         m = (bd.get(h) or bd.get(str(h)) or {})
@@ -118,13 +136,21 @@ def _timebars_for_day(controller, local_date: str):
     return list(str(i) for i in range(24)), keys, rows
 
 
-def _timebars_for_range(controller, range_key: str, start_day: str, end_day: str):
-    """周/月：按天桶，keys 为范围内 top10/5%+其他，values 为 days x keys。"""
+def _timebars_for_range(controller, range_key: str, start_day: str, end_day: str, dim: str = "app"):
+    """周/月：按天桶，keys 为范围内 top10/5%+其他，values 为 days x keys。
+    dim: app | category | browser —— 决定范围 keys 与逐日值的数据源（其余逻辑不变）。"""
     from datetime import datetime as dt_module, timedelta
     from eye_care.data.repository import DateRange
     repo = controller.repo
+    dim = (dim or "app").lower()
+    site_independent = list(getattr(getattr(controller, "cfg", None), "site_independent_hosts", None) or [])
     dr = DateRange(start_local_date=start_day, end_local_date=end_day)
-    usage = controller.repo.get_usage_range(dr, dim="app") or {}
+    if dim == "browser":
+        from eye_care.utils.site_rules import merge_domain_usage
+        usage = (repo.get_domain_usage_range(dr) if hasattr(repo, "get_domain_usage_range") else {}) or {}
+        usage = merge_domain_usage(usage, site_independent)
+    else:
+        usage = (repo.get_usage_range(dr, dim=dim) if hasattr(repo, "get_usage_range") else {}) or {}
     keys = _top_keys(usage) + ["其他"]
     if not keys:
         keys = ["其他"]
@@ -141,7 +167,13 @@ def _timebars_for_range(controller, range_key: str, start_day: str, end_day: str
         labels = [str(dt_module.strptime(d, "%Y-%m-%d").day) + "日" for d in days_list]
     rows = []
     for d in days_list:
-        day_usage = repo.get_daily_usage(d) if hasattr(repo, "get_daily_usage") else {}
+        if dim == "browser":
+            day_usage = repo.get_daily_domain_usage(d) if hasattr(repo, "get_daily_domain_usage") else {}
+            day_usage = merge_domain_usage(day_usage, site_independent)
+        elif dim == "category":
+            day_usage = repo.get_usage_range(DateRange(d, d), dim="category") if hasattr(repo, "get_usage_range") else {}
+        else:
+            day_usage = repo.get_daily_usage(d) if hasattr(repo, "get_daily_usage") else {}
         total = sum(int(day_usage.get(k, 0) or 0) for k in day_usage)
         vals = []
         top_sum = 0

@@ -61,3 +61,15 @@ class AppConfig:
 
     # 启动引导：True=启动时显示引导；首次完成/跳过后自动置 False
     show_onboarding: bool = True
+
+    # 是否记录浏览器 domain 统计。隐私考虑默认关闭；开启后才记录浏览器域名
+    # （如 baidu.com，不含完整网址/页面标题）并在左栏显示「浏览器」页签。
+    record_browser_enabled: bool = False
+
+    # 站点「独立统计名单」：名单里的子站点不并入主域名（展示层归并规则，见 utils/site_rules）。
+    # 预置 Google 三件套；更深子域按最长后缀匹配归属（foo.mail.google.com → mail.google.com）。
+    site_independent_hosts: List[str] = field(
+        default_factory=lambda: ["drive.google.com", "photos.google.com", "mail.google.com"]
+    )
+    # 站点显示名别名（key = site_key，如 mail.google.com → "Gmail"）；留空=显示域名。
+    site_display_overrides: Dict[str, str] = field(default_factory=dict)

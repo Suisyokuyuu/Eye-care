@@ -13,15 +13,17 @@ from ..config.display_utils import get_display_name as _get_display_name, is_bla
 from ..config.models import AppConfig
 from ..config.store import load_config, save_config
 from ..data.json_wal_repo import JsonWalRepository
-from ..data.repository import UsageDelta, EventRecord
+from ..data.repository import UsageDelta, EventRecord, DomainDelta
 from ..diagnostics import diag
 from ..diagnostics.diag_events import log_exception_summary
+from ..probes.browser_url import make_browser_watcher
 from ..probes.foreground import get_foreground
 from ..probes.fullscreen import is_foreground_fullscreen
 from ..probes.idle import get_idle_seconds
 from ..ui.state_machines import RestEntryGuardMachine
 from ..ui.state_machines.types import RestEntryGuardState
 from ..utils.time_utils import utcnow, local_date_today
+from ..utils.url_domain import BROWSER_APP_SHORTS
 from .viewmodel_service import ViewModelService
 
 log = logging.getLogger(__name__)
@@ -152,6 +154,10 @@ class AppController:
         self._tick_mono_last: float = 0.0
         self._tick_accum: float = 0.0
 
+        # 浏览器 domain 采集探针：非 Windows / 无 comtypes / 构造异常 → no-op（绝不抛）。
+        # 隐私：完整 URL 只存在于 watcher worker 线程内，controller 只拿到 domain。
+        self._browser_watcher = make_browser_watcher(log)
+
 
     def _apply_exit_state_need_merge(self) -> None:
         """If previous run left exit_state.json with need_merge=true, run merge and clear the marker."""
@@ -275,6 +281,8 @@ class AppController:
         self._tick_accum = 0.0
         self._thr = threading.Thread(target=self._tick_loop, daemon=True, name="tick_loop")
         self._thr.start()
+        # no-op watcher 的 start 也是 no-op，统一调用无需分支
+        self._browser_watcher.start()
 
     def stop(self) -> None:
         """Stable shutdown:
@@ -286,6 +294,10 @@ class AppController:
         """
         diag.emit("DIAG_STOP_BEGIN", log, "进入 stop")
         self._stop.set()
+        try:
+            self._browser_watcher.stop()
+        except Exception:
+            pass
         tick_joined = True
         if self._thr:
             self._thr.join(timeout=2.0)
@@ -990,6 +1002,27 @@ class AppController:
         except Exception:
             log.exception("_compensate_auto_idle_on_exit_rest failed")
 
+    def _maybe_record_domain(self, fg_short: str, sec_add: int, now_utc) -> None:
+        """浏览器 domain 采集与记录。
+
+        隐私：完整 URL 只在 watcher worker 线程内出现，这里只拿到已剥离的 domain。
+        - 仅当「开关开 且 前台是浏览器」时激活探针（set_active(True)）；
+        - 否则 set_active(False) 并直接返回（不写 repo）；
+        - domain 为空（内部页/搜索词/采样过期）时丢弃，不写 repo。
+        """
+        is_browser = fg_short in BROWSER_APP_SHORTS
+        rec_browser = bool(getattr(self.cfg, "record_browser_enabled", False))
+        self._browser_watcher.set_active(rec_browser and is_browser)
+        if not (rec_browser and is_browser):
+            return
+        if int(sec_add) <= 0:
+            return
+        dom = self._browser_watcher.get_domain()
+        if dom:
+            self.repo.add_domain_usage(
+                DomainDelta(domain=dom, seconds=int(sec_add), utc_ts=now_utc)
+            )
+
     def _tick_loop(self) -> None:
         interval = float(self.cfg.sample_interval_s or 1.0)
         while not self._stop.is_set():
@@ -1015,6 +1048,9 @@ class AppController:
                     sec_add = 1
 
                 now_utc = utcnow()
+                # 默认每拍先关浏览器采集；仅在下方「实际计时」块内才按需置 active=True。
+                # 保证休息/空闲/黑名单/无前台等门控不满足时 watcher 不残留 active。
+                self._browser_watcher.set_active(False)
                 idle = int(get_idle_seconds())
                 # keep previous idle for edge-detection (enter-idle rollback, rest-complete trigger)
                 prev_idle = int(self._prev_idle_s)
@@ -1113,6 +1149,9 @@ class AppController:
                             if int(sec_add) > 0:
                                 self.repo.add_usage(UsageDelta(app_short=fg_short, seconds=int(sec_add), utc_ts=now_utc))
                                 self._last_count_app = fg_short
+
+                                # 浏览器 domain 采集（与黑名单/休息门控天然一致，仅实际计时时记录）
+                                self._maybe_record_domain(fg_short, int(sec_add), now_utc)
 
                                 # only count when there is a real foreground app
                                 with self._lock:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, DefaultDict, Dict, List, Optional, Tuple
 
 from eye_care.diagnostics.diag_events import log_exception_summary
-from .repository import DateRange, EventRecord, MinuteUsageRecord, Repository, TimelineSegment, UsageDelta
+from .repository import DateRange, DomainDelta, EventRecord, MinuteUsageRecord, Repository, TimelineSegment, UsageDelta
 
 log = logging.getLogger(__name__)
 
@@ -120,24 +120,28 @@ def _iter_tail_lines(path: Path, max_lines: int):
     return data[-max_lines:]
 
 
-def _merge_minute_row_into(merged: dict, rec: dict) -> None:
-    """将一条 minute 记录合并到 merged 字典中，同一时间戳下每个 app 取 max 秒数"""
+def _merge_minute_row_into(merged: dict, rec: dict, field: str = "apps", schema: str = "minute@1") -> None:
+    """将一条 minute 记录合并到 merged 字典中，同一时间戳下每个 key 取 max 秒数。
+
+    参数化 field/schema：app 维度用 field="apps"/schema="minute@1"（默认），
+    domain 维度用 field="domains"/schema="domain_minute@1"，共用同一合并逻辑。
+    """
     ts = str(rec.get("minute_start_utc", ""))
     local_date = str(rec.get("local_date", ""))
     if not ts or not local_date:
         return
     key = (local_date, ts)
     slot = merged.setdefault(
-        key, {"_schema": "minute@1", "minute_start_utc": ts, "local_date": local_date, "apps": {}}
+        key, {"_schema": schema, "minute_start_utc": ts, "local_date": local_date, field: {}}
     )
-    apps = rec.get("apps") if isinstance(rec.get("apps"), dict) else {}
-    for app, sec in apps.items():
-        appk = str(app).strip()
-        if not appk:
+    items = rec.get(field) if isinstance(rec.get(field), dict) else {}
+    for k, sec in items.items():
+        kk = str(k).strip()
+        if not kk:
             continue
-        oldv = _safe_int_nonneg(slot["apps"].get(appk, 0))
+        oldv = _safe_int_nonneg(slot[field].get(kk, 0))
         newv = _safe_int_nonneg(sec)
-        slot["apps"][appk] = max(oldv, newv)
+        slot[field][kk] = max(oldv, newv)
 
 
 class JsonWalRepo(Repository):
@@ -166,6 +170,10 @@ class JsonWalRepo(Repository):
         self.dir_events.mkdir(parents=True, exist_ok=True)
         self.dir_wal.mkdir(parents=True, exist_ok=True)
 
+        # 浏览器 domain 平行维度：主文件目录**惰性 mkdir**（首次写时才建），
+        # 功能从未开过则目录不存在，所有读路径先探测 exists → 零开销。
+        self.dir_domains = self.data_dir / "minute_domains"
+
         # App -> Category mapping (editable by user)
         self._cat_path = self.data_dir / "app_categories.json"
         self._app_categories: Dict[str, str] = {}
@@ -185,9 +193,18 @@ class JsonWalRepo(Repository):
         self._cur_minute_local_date: str | None = None
         self._cur_apps: Dict[str, int] = defaultdict(int)
 
+        # domain 维度独立的分钟累加器（不与 app 累加器合用，避免 finalize 时序耦合）
+        self._cur_dom_minute_start_utc: datetime | None = None
+        self._cur_dom_minute_local_date: str | None = None
+        self._cur_domains: Dict[str, int] = defaultdict(int)
+        # domain 独立日缓存（LRU，OrderedDict），并入 _evict_oldest_day 同步淘汰、今天永不淘汰
+        self._domain_daily_cache: OrderedDict[str, Dict[str, int]] = OrderedDict()
+        self._domains_dir_created = False  # 惰性 mkdir 标记
+
         # WAL in-memory buffers (write-behind). Keys are local_date.
         self._wal_minutes: DefaultDict[str, List[str]] = defaultdict(list)
         self._wal_events: DefaultDict[str, List[str]] = defaultdict(list)
+        self._wal_domains: DefaultDict[str, List[str]] = defaultdict(list)
 
         # Thread safety: tick loop + checkpoint + UI all touch caches/WAL.
         self._lock = threading.RLock()
@@ -208,6 +225,15 @@ class JsonWalRepo(Repository):
             self._load_day_into_cache(today)
         except Exception:
             log.exception("repo: preload today failed")
+
+        # domain 维度：仅当目录已存在（功能曾开过）才预热今天，避免重启后
+        # add_domain_usage 从空缓存起累计而丢掉当天已落盘数据；功能从未用过则零开销。
+        if self.dir_domains.exists():
+            self._domains_dir_created = True
+            try:
+                self._load_domains_into_cache(today)
+            except Exception:
+                log.exception("repo: preload today domains failed")
 
     def _load_app_categories(self) -> None:
         """Load app->category mapping. 文件不存在时创建空 {}，未命中则走内置启发式（见 _cat_of）。"""
@@ -354,6 +380,19 @@ class JsonWalRepo(Repository):
     def _wal_events_path(self, day: str) -> Path:
         return self.dir_wal / f"events-{day}.jsonl"
 
+    def _domains_path(self, day: str) -> Path:
+        return self.dir_domains / f"domains-{day}.jsonl"
+
+    def _wal_domains_path(self, day: str) -> Path:
+        # 主/WAL 同名（domains-YYYY-MM-DD.jsonl），merge 不需要 stem 映射
+        return self.dir_wal / f"domains-{day}.jsonl"
+
+    def _ensure_domains_dir(self) -> None:
+        """惰性创建 minute_domains 目录（首次写 domain 时调用）。"""
+        if not self._domains_dir_created:
+            self.dir_domains.mkdir(parents=True, exist_ok=True)
+            self._domains_dir_created = True
+
     # ---------------- low level IO ----------------
     def _append_lines(self, path: Path, lines: List[str]) -> Tuple[int, int]:
         if not lines:
@@ -438,6 +477,28 @@ class JsonWalRepo(Repository):
                 continue
         self._events_cache[day] = evts
 
+    def _apply_domain_record_to_cache(self, rec: Dict[str, Any]) -> None:
+        day = rec.get("local_date")
+        if not day:
+            return
+        domains: Dict[str, int] = rec.get("domains") or {}
+        d = self._domain_daily_cache.setdefault(day, defaultdict(int))  # type: ignore
+        for k, s in domains.items():
+            try:
+                d[k] = max(0, d[k] + int(s))
+            except Exception as e:
+                log_exception_summary(log, "DIAG_EXCEPTION", "repo domains clamp", "degrade_continue", detail=str(e)[:200], reason_code="E_REPO_BAD_DOMAINS_SKIP")
+                continue
+
+    def _load_domains_into_cache(self, day: str) -> None:
+        """独立于 _load_day_into_cache，只在浏览器视图查询（或今天预热）时触发。
+        重置该天后从磁盘 主文件 + WAL 重建。"""
+        self._domain_daily_cache[day] = defaultdict(int)  # type: ignore
+        for rec in self._read_jsonl(self._domains_path(day)):
+            self._apply_domain_record_to_cache(rec)
+        for rec in self._read_jsonl(self._wal_domains_path(day)):
+            self._apply_domain_record_to_cache(rec)
+
     # ---------------- writes ----------------
     def _finalize_current_minute(self) -> None:
         if self._cur_minute_start_utc is None or not self._cur_apps:
@@ -476,6 +537,34 @@ class JsonWalRepo(Repository):
             del buf[:written_lines]
             log.debug("repo.flush.events: day=%s lines=%s bytes=%s", day, written_lines, written_bytes)
 
+    def _finalize_current_domain_minute(self) -> None:
+        if self._cur_dom_minute_start_utc is None or not self._cur_domains:
+            self._cur_domains = defaultdict(int)
+            return
+        day = self._cur_dom_minute_local_date or self._cur_dom_minute_start_utc.astimezone().date().isoformat()
+        rec = {
+            "_schema": "domain_minute@1",
+            "minute_start_utc": _iso_z(self._cur_dom_minute_start_utc),
+            "local_date": day,
+            "domains": dict(self._cur_domains),
+        }
+        line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
+        self._wal_domains[day].append(line)
+
+        # Try immediate durable write (minute boundary safety). If fail, buffer stays.
+        self._flush_domains_day(day)
+
+        self._cur_domains = defaultdict(int)
+
+    def _flush_domains_day(self, day: str) -> None:
+        buf = self._wal_domains.get(day)
+        if not buf:
+            return
+        written_bytes, written_lines = self._append_lines(self._wal_domains_path(day), buf)
+        if written_lines:
+            del buf[:written_lines]
+            log.debug("repo.flush.domains: day=%s lines=%s bytes=%s", day, written_lines, written_bytes)
+
     def add_usage(self, delta: UsageDelta) -> None:
         with self._lock:
             # Handle minute boundary finalize
@@ -497,6 +586,34 @@ class JsonWalRepo(Repository):
 
             # Update current minute bucket (写入保护: clamp to >= 0)
             self._cur_apps[delta.app_short] = max(0, self._cur_apps[delta.app_short] + int(delta.seconds))
+
+    def add_domain_usage(self, delta: DomainDelta) -> None:
+        """domain 平行维度：分钟边界 finalize→WAL，daily cache 即时累加供 UI。"""
+        domain = (delta.domain or "").strip()
+        if not domain:
+            return
+        with self._lock:
+            # 首次写 domain → 惰性建目录
+            self._ensure_domains_dir()
+
+            ts = delta.utc_ts.astimezone(timezone.utc)
+            minute_start = ts.replace(second=0, microsecond=0)
+            local_day = minute_start.astimezone().date().isoformat()
+
+            if self._cur_dom_minute_start_utc is None:
+                self._cur_dom_minute_start_utc = minute_start
+                self._cur_dom_minute_local_date = local_day
+            elif minute_start != self._cur_dom_minute_start_utc:
+                self._finalize_current_domain_minute()
+                self._cur_dom_minute_start_utc = minute_start
+                self._cur_dom_minute_local_date = local_day
+
+            # 即时累加日缓存（clamp >= 0）
+            d = self._domain_daily_cache.setdefault(local_day, defaultdict(int))  # type: ignore
+            d[domain] = max(0, d[domain] + int(delta.seconds))
+
+            # 当前分钟桶（clamp >= 0）
+            self._cur_domains[domain] = max(0, self._cur_domains[domain] + int(delta.seconds))
 
     def _invalidate_caches_for_date(self, local_date: str, app_key: str = None) -> None:
         """失效指定日期的缓存（包括 API 缓存和 last_active 缓存）。"""
@@ -571,9 +688,22 @@ class JsonWalRepo(Repository):
             if victim is None:                       # 只剩今天 → 停止（即便超过上限也保留今天）
                 break
             self._daily_cache.pop(victim, None)
-            # 同步淘汰 hourly 和 events
+            # 同步淘汰 hourly、events、domains
             self._hourly_cache.pop(victim, None)
             self._events_cache.pop(victim, None)
+            self._domain_daily_cache.pop(victim, None)
+
+        # domain 缓存独立 LRU 上限：浏览器视图查询驱动，可能与 app 缓存不同步增长，
+        # 故单独封顶（同样"今天永不淘汰"，避免历史日历撑爆缓存把今天挤掉）。
+        while len(self._domain_daily_cache) > MAX_CACHE_DAYS:
+            victim = None
+            for day in self._domain_daily_cache:  # OrderedDict：从最旧到最新
+                if day != today:
+                    victim = day
+                    break
+            if victim is None:
+                break
+            self._domain_daily_cache.pop(victim, None)
 
     def get_daily_usage(self, local_date: str) -> Dict[str, int]:
         with self._lock:
@@ -631,6 +761,30 @@ class JsonWalRepo(Repository):
                     continue
 
             # Convert nested defaultdict -> dict
+            return {int(h): dict(v) for h, v in out.items()}
+
+
+    def get_hourly_domain_breakdown(self, local_date: str) -> Dict[int, Dict[str, int]]:
+        """Return per-hour per-domain breakdown for a day（get_hourly_breakdown 的 domain 版）。
+
+        - local_date: YYYY-MM-DD (local)
+        Data source: minute_domains jsonl (main + wal)。功能从未开过（目录不存在）→ 返回 {}（零开销）。
+        """
+        with self._lock:
+            # 零开销早退：目录不存在（功能从未用过）→ 返回 {}
+            if not self.dir_domains.exists():
+                return {}
+            out: Dict[int, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+            for rec in self._read_jsonl(self._domains_path(local_date)) + self._read_jsonl(self._wal_domains_path(local_date)):
+                try:
+                    domains: Dict[str, int] = rec.get("domains") or {}
+                    mu = _parse_iso_z(rec["minute_start_utc"])
+                    hour = int(mu.astimezone().hour)
+                    for dom, sec in domains.items():
+                        out[hour][str(dom)] += int(sec or 0)
+                except Exception as e:
+                    log_exception_summary(log, "DIAG_EXCEPTION", "repo hourly domain aggregate", "degrade_continue", detail=str(e)[:200], reason_code="E_REPO_BAD_HOURLY_SKIP")
+                    continue
             return {int(h): dict(v) for h, v in out.items()}
 
 
@@ -776,6 +930,37 @@ class JsonWalRepo(Repository):
         usage = self.get_usage_range(dr, dim=dim)
         return sorted(usage.items(), key=lambda x: x[1], reverse=True)[: int(top_n)]
 
+    # ---------------- domain reads ----------------
+    def get_daily_domain_usage(self, local_date: str) -> Dict[str, int]:
+        """某天各 domain 秒数。功能从未开过（目录不存在且缓存无此天）→ 返回 {}。"""
+        with self._lock:
+            # 零开销早退：目录不存在（功能从未用过），且缓存里也没有该天
+            if not self.dir_domains.exists() and local_date not in self._domain_daily_cache:
+                return {}
+            if local_date not in self._domain_daily_cache:
+                self._load_domains_into_cache(local_date)
+            if local_date in self._domain_daily_cache:
+                self._domain_daily_cache.move_to_end(local_date)
+                self._evict_oldest_day()
+            return dict(self._domain_daily_cache.get(local_date, {}))
+
+    def get_domain_usage_range(self, dr: DateRange) -> Dict[str, int]:
+        """跨日逐日累加各 domain 秒数。功能从未开过 → 返回 {}。"""
+        with self._lock:
+            if not self.dir_domains.exists() and not self._domain_daily_cache:
+                return {}
+        out: Dict[str, int] = defaultdict(int)
+        start_d = _parse_local_date(dr.start_local_date)
+        end_d = _parse_local_date(dr.end_local_date)
+        cur = start_d.isoformat()
+        end_str = end_d.isoformat()
+        while cur <= end_str:
+            for k, v in self.get_daily_domain_usage(cur).items():
+                out[k] += int(v)
+            d = _parse_local_date(cur)
+            cur = date.fromordinal(d.toordinal() + 1).isoformat()
+        return dict(out)
+
     # ---------------- lifecycle ----------------
     def flush(self) -> None:
         with self._lock:
@@ -791,12 +976,21 @@ class JsonWalRepo(Repository):
             for day in list(self._wal_events.keys()):
                 self._flush_events_day(day)
 
+            for day in list(self._wal_domains.keys()):
+                self._flush_domains_day(day)
+
             if total_bytes:
                 log.info("repo.flush: minute_wal_pending=%s", sum(len(v) for v in self._wal_minutes.values()))
             self._last_flush_ok_ts = time.time()
 
-    def _merge_one_type(self, wal_glob: str, main_dir: Path, schema_type: str, local_date: str | None = None):
-        """通用 WAL 合并逻辑：events 和 minutes 共用（幂等版）"""
+    def _merge_one_type(self, wal_glob: str, main_dir: Path, schema_type: str, local_date: str | None = None,
+                        field: str = "apps", schema: str = "minute@1"):
+        """通用 WAL 合并逻辑：events / minutes / domains 共用（幂等版）。
+
+        field/schema 参数化：app minutes 用默认 apps/minute@1；domain minutes 用
+        domains/domain_minute@1。domain 的主/WAL 同名（domains-*.jsonl），下面 stem
+        映射（minutes-→minute-）对 domains 名无副作用，天然复用。
+        """
         # 按日期过滤 WAL 文件
         if local_date:
             wal_name = wal_glob.replace("*", local_date)
@@ -831,7 +1025,7 @@ class JsonWalRepo(Repository):
                                 if not s:
                                     continue
                                 try:
-                                    _merge_minute_row_into(merged, json.loads(s))
+                                    _merge_minute_row_into(merged, json.loads(s), field=field, schema=schema)
                                 except Exception as e:
                                     log_exception_summary(log, "DIAG_EXCEPTION", "repo merge minute main", "degrade_continue", detail=str(e)[:200], reason_code="E_REPO_BAD_MINUTE_SKIP")
                                     continue
@@ -847,7 +1041,7 @@ class JsonWalRepo(Repository):
                                 continue
                             wal_seen.add(k)
                             try:
-                                _merge_minute_row_into(merged, json.loads(s))
+                                _merge_minute_row_into(merged, json.loads(s), field=field, schema=schema)
                             except Exception as e:
                                 log_exception_summary(log, "DIAG_EXCEPTION", "repo merge minute wal", "degrade_continue", detail=str(e)[:200], reason_code="E_REPO_BAD_MINUTE_SKIP")
                                 continue
@@ -891,6 +1085,9 @@ class JsonWalRepo(Repository):
         """按日期合并单天的 WAL 文件"""
         self._merge_one_type("events-*.jsonl", self.dir_events, "event", local_date)
         self._merge_one_type("minutes-*.jsonl", self.dir_minutes, "minute", local_date)
+        # domain 维度：无 WAL 时 _merge_one_type 直接空转、不创建 dir_domains（保持惰性）
+        self._merge_one_type("domains-*.jsonl", self.dir_domains, "minute", local_date,
+                             field="domains", schema="domain_minute@1")
 
     def merge(self) -> None:
         """Consolidate WAL files into main files with idempotency (dedup)."""
@@ -906,6 +1103,9 @@ class JsonWalRepo(Repository):
                 processed_dates.add(day)
             for wal_path in sorted(self.dir_wal.glob("events-*.jsonl")):
                 day = wal_path.stem.replace("events-", "")
+                processed_dates.add(day)
+            for wal_path in sorted(self.dir_wal.glob("domains-*.jsonl")):
+                day = wal_path.stem.replace("domains-", "")
                 processed_dates.add(day)
 
             for day in sorted(processed_dates):
@@ -930,6 +1130,7 @@ class JsonWalRepo(Repository):
             self._closed = True
             # On clean shutdown, finalize current minute to reduce loss (<60s).
             self._finalize_current_minute()
+            self._finalize_current_domain_minute()
             self.merge()
             dur_ms = (time.perf_counter() - t0) * 1000.0
             self._last_close_ok_ts = time.time()

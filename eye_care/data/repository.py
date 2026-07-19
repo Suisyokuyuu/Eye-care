@@ -26,6 +26,15 @@ class UsageDelta:
 
 
 @dataclass(frozen=True)
+class DomainDelta:
+    """Seconds added to domain at utc_ts（浏览器 domain 平行维度，仿 UsageDelta）。"""
+
+    domain: str
+    seconds: int
+    utc_ts: datetime
+
+
+@dataclass(frozen=True)
 class MinuteUsageRecord:
     """One minute bucket.
 
@@ -79,6 +88,13 @@ class Repository(Protocol):
 
     # ---- read (fast path) ----
     def get_daily_usage(self, local_date: str) -> Dict[str, int]: ...
+
+    # ---- 浏览器 domain 平行维度（与 app 维度平行，独立存储/缓存） ----
+    def add_domain_usage(self, delta: DomainDelta) -> None: ...
+    def get_daily_domain_usage(self, local_date: str) -> Dict[str, int]: ...
+    def get_domain_usage_range(self, dr: DateRange) -> Dict[str, int]: ...
+    # 每小时的 per-domain 分布（get_hourly_breakdown 的 domain 版）；功能关闭（目录不存在）→ {}
+    def get_hourly_domain_breakdown(self, local_date: str) -> Dict[int, Dict[str, int]]: ...
 
     # ---- read (analytics helpers for UI) ----
     # dim: app | category

@@ -640,7 +640,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 current = asdict(ctrl.cfg) if hasattr(ctrl, "cfg") else {}
                 merged = {**current, **filtered}
                 merged = {k: merged[k] for k in allowed if k in merged}
-                for key, default in (("app_category_overrides", {}), ("app_display_overrides", {}), ("app_auto_dnd_on_focus", {}), ("blacklist_apps", [])):
+                for key, default in (("app_category_overrides", {}), ("app_display_overrides", {}), ("app_auto_dnd_on_focus", {}), ("blacklist_apps", []), ("site_display_overrides", {})):
                     if key not in merged:
                         merged[key] = default
                     if key == "blacklist_apps" and isinstance(merged[key], list):
@@ -1118,6 +1118,17 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             bridges["settingsBridge"].configChanged.connect(_reconcile_notifier)
         except Exception:
             pass
+        # 设置点「应用」后 → 左栏立即重算（浏览器统计开关翻转 → browserEnabled 变 → 页签即时显隐）。
+        try:
+            bridges["settingsBridge"].configChanged.connect(bridges["leftPanelBridge"].refresh)
+        except Exception:
+            pass
+        # 站点归并规则/显示名变更（站点详情页勾选独立统计、改显示名）→ 左右栏即时重算并回溯。
+        try:
+            bridges["sitesBridge"].configApplied.connect(bridges["leftPanelBridge"].refresh)
+            bridges["sitesBridge"].configApplied.connect(bridges["rightPanelBridge"].refresh)
+        except Exception:
+            pass
 
         # 10s 轮询刷新左右栏
         poll = QTimer()
@@ -1174,6 +1185,12 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 notifier.stop(timeout_s=2.0)
             except Exception:
                 log.exception("qt shutdown: notifier.stop failed")
+        favicon = (_qml_refs.get("bridges") or {}).get("_faviconService")
+        if favicon is not None:
+            try:
+                favicon.stop(timeout_s=2.0)
+            except Exception:
+                log.exception("qt shutdown: favicon.stop failed")
         if controller is not None:
             try:
                 controller.stop()

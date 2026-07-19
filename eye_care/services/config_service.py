@@ -54,6 +54,11 @@ class ConfigService:
             "notify_auto_hide_seconds": int(getattr(cfg, "notify_auto_hide_seconds", 20)),
             "rest_end_sound_enabled": bool(getattr(cfg, "rest_end_sound_enabled", True)),
             "fullscreen_dnd": bool(getattr(cfg, "fullscreen_dnd", True)),
+            # 隐私默认关：与 fullscreen_dnd 的默认开口径相反。
+            "record_browser_enabled": bool(getattr(cfg, "record_browser_enabled", False)),
+            # 站点归并配置（浏览器统计展示层）——与 app_display_overrides 同等待遇。
+            "site_independent_hosts": list(getattr(cfg, "site_independent_hosts", None) or []),
+            "site_display_overrides": dict(getattr(cfg, "site_display_overrides", None) or {}),
         }
         return {"api_version": API_VERSION, "config": out}
 
@@ -93,6 +98,26 @@ class ConfigService:
             cfg.rest_end_sound_enabled = bool(updates["rest_end_sound_enabled"])
         if "fullscreen_dnd" in updates:
             cfg.fullscreen_dnd = bool(updates["fullscreen_dnd"])
+        if "record_browser_enabled" in updates:
+            cfg.record_browser_enabled = bool(updates["record_browser_enabled"])
+        if "site_independent_hosts" in updates:
+            v = updates["site_independent_hosts"]
+            if isinstance(v, (list, tuple)):
+                # 去空白/转小写/去尾点/去重（保序），与 site_rules._norm 口径一致。
+                seen = set()
+                clean = []
+                for x in v:
+                    h = str(x or "").strip().lower().rstrip(".")
+                    if h and h not in seen:
+                        seen.add(h)
+                        clean.append(h)
+                cfg.site_independent_hosts = clean
+        if "site_display_overrides" in updates:
+            v = updates["site_display_overrides"]
+            if isinstance(v, dict):
+                cfg.site_display_overrides = {
+                    str(k): str(val) for k, val in v.items() if str(val or "").strip()
+                }
         save_config(self.ctx.controller.cfg_path, cfg)
         self.ctx.controller.on_config_updated()
         return {"ok": True, "api_version": API_VERSION}
