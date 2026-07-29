@@ -41,8 +41,18 @@ if errorlevel 1 (
 )
 
 if not exist "main.py" (echo main.py not found. & pause & exit /b 1)
-if not exist "version_info.txt" (echo version_info.txt not found. & pause & exit /b 1)
 if not exist "icon.ico" (echo icon.ico not found. & pause & exit /b 1)
+
+REM version_info.txt is generated from eye_care\version.py - never edit it by hand.
+REM Regenerating here keeps the exe properties in sync even when building directly
+REM (menu.bat does the same). Use menu.bat option 1 to change the version number.
+echo Syncing version info...
+%PY_CMD% scripts\sync_version.py
+if errorlevel 1 (
+    echo Failed to generate version_info.txt from eye_care\version.py.
+    pause
+    exit /b 1
+)
 
 echo Building with spec file...
 %PY_CMD% -m PyInstaller "EyE Care.spec" --noconfirm --clean

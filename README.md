@@ -37,6 +37,24 @@ python main.py --data-dir ./dev_data   # 指定数据目录
 python main.py --no-single      # 允许多实例（开发时用）
 ```
 
+### 改版本号 / 打包
+
+双击项目根目录的 **`menu.bat`**：
+
+| 选项 | 说明 |
+|------|------|
+| `[1] 修改版本号` | 写 `eye_care/version.py`，并自动重新生成 `version_info.txt` |
+| `[2] 打包 exe` | 可顺便改版本号；打包前自动同步版本、检查依赖，产出 `dist/EyE Care/` |
+| `[3] 清理构建产物` | 删除 `dist/`、`build/`、所有 `__pycache__` |
+
+版本号的唯一真源是 `eye_care/version.py`；`version_info.txt`（exe 属性里显示的版本）
+是生成物，**不要手改**。命令行等价写法：
+
+```bash
+python scripts/sync_version.py 1.4.0   # 改版本号并重新生成
+python scripts/sync_version.py         # 只按现有版本重新生成
+```
+
 ---
 
 ## 界面预览

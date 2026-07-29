@@ -1,5 +1,6 @@
 # runtime data / logs / diagnostics
 /user_data/
+CLAUDE.md
 
 # python cache
 __pycache__/
