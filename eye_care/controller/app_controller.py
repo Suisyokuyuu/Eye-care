@@ -1192,7 +1192,8 @@ class AppController:
                     self._rested_settled = False
                 # 诊断（吃 --debug / EYECARE_DEBUG）：把离开期间的真实 idle 读数与各 flag 打出来，
                 # 便于定位"明明离开 >60s 却没自动结算"——若离开期间这行始终不出现，说明 idle 没涨上去
-                # （系统层面一直被判为有输入：后台程序/外设/防挂机），而非结算逻辑的问题。
+                # （系统层面一直被判为有输入：某些后台程序或外设会周期性注入合成输入，
+                # GetLastInputInfo 无法与真人操作区分），而非结算逻辑的问题。
                 if idle >= 3:
                     try:
                         from ..diagnostics.debug_switch import is_debug_enabled
