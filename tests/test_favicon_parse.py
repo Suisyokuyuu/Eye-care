@@ -152,6 +152,207 @@ class TestModuleImportWithoutPySide6(unittest.TestCase):
             self.assertEqual(svc.get_icon(""), "")
             self.assertEqual(svc.get_icon(None), "")
 
+    def test_get_icon_never_enqueues_a_fetch(self):
+        """UI 渲染走 get_icon，必须只读本地缓存——打开统计页不产生任何网络请求。"""
+        import tempfile
+        from pathlib import Path
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = FaviconService(Path(tmp))
+            for _ in range(10):
+                self.assertEqual(svc.get_icon("never-fetched.com"), "")
+            self.assertEqual(svc._queued, set())
+            self.assertTrue(svc._queue.empty())
+            self.assertIsNone(svc._worker)
+
+    def test_prefetch_enqueues_once_then_skips_already_fetched(self):
+        """prefetch 是唯一联网入口：没抓过才入队；已抓过（索引 ok + 文件在）直接跳过。"""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = FaviconService(Path(tmp))
+            # 阻止真的起 worker 发请求：入队情况通过 _queued/_queue 观察
+            svc._ensure_worker = lambda: None
+
+            svc.prefetch("fresh.com")
+            self.assertIn("fresh.com", svc._queued)
+            # 已在队列里 → 重复调用不再入队
+            svc.prefetch("fresh.com")
+            self.assertEqual(list(svc._queue.queue).count("fresh.com"), 1)
+
+            # 造一个「抓过并落盘」的域名：索引 ok + PNG 文件存在 → 永不再抓
+            icons = Path(tmp) / "domain_icons"
+            icons.mkdir(parents=True, exist_ok=True)
+            (icons / "done.png").write_bytes(b"fake-png")
+            (icons / "icon_index.json").write_text(json.dumps(
+                {"done.com": {"file": "done.png", "ok": True, "ts": 1.0,
+                              "fail_count": 0, "next_retry_ts": 0}}), encoding="utf-8")
+            svc2 = FaviconService(Path(tmp))
+            svc2._ensure_worker = lambda: None
+            svc2.prefetch("done.com")
+            self.assertEqual(svc2._queued, set())
+            self.assertTrue(svc2._queue.empty())
+
+    def test_prefetch_does_not_stat_disk_every_call(self):
+        """prefetch 每拍（1s）被调用，已抓过的站点不得每次都 stat 磁盘。"""
+        import json
+        import pathlib
+        import tempfile
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            icons = pathlib.Path(tmp) / "domain_icons"
+            icons.mkdir(parents=True, exist_ok=True)
+            (icons / "a.png").write_bytes(b"fake-png")
+            (icons / "icon_index.json").write_text(json.dumps(
+                {"cached.com": {"file": "a.png", "ok": True, "ts": 1.0,
+                                "fail_count": 0, "next_retry_ts": 0}}), encoding="utf-8")
+
+            svc = FaviconService(pathlib.Path(tmp))
+            svc._ensure_worker = lambda: None
+
+            real_exists = pathlib.Path.exists
+            calls = {"n": 0}
+
+            def counting(self):
+                calls["n"] += 1
+                return real_exists(self)
+
+            pathlib.Path.exists = counting
+            try:
+                for _ in range(60):
+                    svc.prefetch("cached.com")
+            finally:
+                pathlib.Path.exists = real_exists
+
+            # 索引惰性加载 1 次 + PNG 存在性校验 1 次，之后走 _verified 集合
+            self.assertLessEqual(calls["n"], 2)
+            self.assertEqual(svc._queued, set())
+
+    def test_prefetch_respects_failure_backoff(self):
+        """失败条目退避未到期 → 不重复抓；到期 → 允许再试一次。"""
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            icons = Path(tmp) / "domain_icons"
+            icons.mkdir(parents=True, exist_ok=True)
+            (icons / "icon_index.json").write_text(json.dumps({
+                "cooling.com": {"file": "", "ok": False, "ts": 1.0, "fail_count": 1,
+                                "next_retry_ts": time.time() + 3600},
+                "expired.com": {"file": "", "ok": False, "ts": 1.0, "fail_count": 1,
+                                "next_retry_ts": time.time() - 1},
+            }), encoding="utf-8")
+            svc = FaviconService(Path(tmp))
+            svc._ensure_worker = lambda: None
+
+            svc.prefetch("cooling.com")
+            self.assertEqual(svc._queued, set())
+
+            svc.prefetch("expired.com")
+            self.assertIn("expired.com", svc._queued)
+
+    def test_clear_removes_cache_and_allows_refetch(self):
+        """清除图标缓存 → PNG/索引/内存全清，且该站点重新变成「可抓」。"""
+        import json
+        import pathlib
+        import tempfile
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            icons = pathlib.Path(tmp) / "domain_icons"
+            icons.mkdir(parents=True, exist_ok=True)
+            (icons / "a.png").write_bytes(b"fake-png")
+            (icons / "icon_index.json").write_text(json.dumps(
+                {"x.com": {"file": "a.png", "ok": True, "ts": 1.0,
+                           "fail_count": 0, "next_retry_ts": 0}}), encoding="utf-8")
+
+            svc = FaviconService(pathlib.Path(tmp))
+            svc._ensure_worker = lambda: None
+            svc.prefetch("x.com")
+            self.assertEqual(svc._queued, set())          # 清除前：已抓过，不抓
+
+            self.assertTrue(svc.clear("x.com"))
+            self.assertFalse((icons / "a.png").exists())  # PNG 已删
+            self.assertNotIn("x.com", json.loads(
+                (icons / "icon_index.json").read_text(encoding="utf-8")))  # 索引条目已删
+            self.assertEqual(svc.get_icon("x.com"), "")   # 读不到了，UI 走首字母兜底
+
+            svc.prefetch("x.com")
+            self.assertIn("x.com", svc._queued)           # 清除后：重新可抓
+
+    def test_clear_resets_failure_backoff(self):
+        """清除也能解掉负缓存——抓失败的站点可以立刻重试，不用等 6 小时。"""
+        import json
+        import pathlib
+        import tempfile
+        import time
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            icons = pathlib.Path(tmp) / "domain_icons"
+            icons.mkdir(parents=True, exist_ok=True)
+            (icons / "icon_index.json").write_text(json.dumps(
+                {"f.com": {"file": "", "ok": False, "ts": 1.0, "fail_count": 3,
+                           "next_retry_ts": time.time() + 7 * 24 * 3600}}), encoding="utf-8")
+
+            svc = FaviconService(pathlib.Path(tmp))
+            svc._ensure_worker = lambda: None
+            svc.prefetch("f.com")
+            self.assertEqual(svc._queued, set())          # 退避中，不抓
+
+            svc.clear("f.com")
+            svc.prefetch("f.com")
+            self.assertIn("f.com", svc._queued)           # 退避已解除
+
+    def test_clear_unknown_domain_is_safe(self):
+        import pathlib
+        import tempfile
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = FaviconService(pathlib.Path(tmp))
+            self.assertFalse(svc.clear("never-seen.com"))
+            self.assertFalse(svc.clear(""))
+            self.assertFalse(svc.clear(None))
+
+    def test_stop_prevents_further_fetches(self):
+        """stop() 后不得再入队/复活 worker。
+
+        关闭时 controller 的 tick 线程可能还在预取，不封死就会在退出途中再发一次网络请求。
+        """
+        import tempfile
+        from pathlib import Path
+
+        from eye_care.services.favicon_service import FaviconService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = FaviconService(Path(tmp))
+            svc.stop(timeout_s=0.1)
+
+            svc.prefetch("example.com")
+            self.assertNotIn("example.com", svc._queued)
+            # 队列里只该有 stop() 自己放的唤醒哨兵 None，没有待抓 domain
+            drained = []
+            while not svc._queue.empty():
+                drained.append(svc._queue.get_nowait())
+            self.assertEqual(drained, [None])
+            self.assertFalse(svc._worker is not None and svc._worker.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()

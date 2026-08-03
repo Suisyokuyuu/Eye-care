@@ -22,6 +22,7 @@ from ..probes.fullscreen import is_foreground_fullscreen
 from ..probes.idle import get_idle_seconds
 from ..ui.state_machines import RestEntryGuardMachine
 from ..ui.state_machines.types import RestEntryGuardState
+from ..utils.site_rules import merge_domain_usage, site_key
 from ..utils.time_utils import utcnow, local_date_today
 from ..utils.url_domain import BROWSER_APP_SHORTS
 from .viewmodel_service import ViewModelService
@@ -42,6 +43,10 @@ CHECKPOINT_INTERVAL_S = 60 * 60
 # 避免 dnd 反复横跳。
 FULLSCREEN_ENTER_TICKS = 2
 FULLSCREEN_LEAVE_TICKS = 4
+
+# favicon 预取门槛：站点当天累计满此秒数才去抓图标。误点一下、几秒就关掉的站点
+# 因此完全不产生网络请求；够这个量的站点迟早要在统计里露面，图标本来也用得上。
+FAVICON_PREFETCH_MIN_SECONDS = 60
 
 
 @dataclass
@@ -157,6 +162,14 @@ class AppController:
         # 浏览器 domain 采集探针：非 Windows / 无 comtypes / 构造异常 → no-op（绝不抛）。
         # 隐私：完整 URL 只存在于 watcher worker 线程内，controller 只拿到 domain。
         self._browser_watcher = make_browser_watcher(log)
+
+        # favicon 预取回调（由外壳注入 FaviconService.prefetch；未注入 → 不联网）。
+        # 见 `set_favicon_prefetch` / `_maybe_record_domain` 的时机说明。
+        self._favicon_prefetch: Optional[Callable[[str], object]] = None
+        # 站点当天累计秒数（key=site_key，非原始子域名），用于 FAVICON_PREFETCH_MIN_SECONDS 门槛。
+        # 首次见到某 key 时从 repo 播种（进程重启不会把已攒够的站点打回从零）。
+        self._favicon_secs: dict = {}
+        self._favicon_secs_day: str = ""
 
 
     def _apply_exit_state_need_merge(self) -> None:
@@ -1002,6 +1015,14 @@ class AppController:
         except Exception:
             log.exception("_compensate_auto_idle_on_exit_rest failed")
 
+    def set_favicon_prefetch(self, fn: Optional[Callable[[str], object]]) -> None:
+        """注入 favicon 预取回调（外壳启动时传 `FaviconService.prefetch`）。
+
+        必须非阻塞：本回调在 tick 线程上每拍被调用，阻塞会拖慢整个计时循环。
+        不注入（None）时 controller 完全不联网。
+        """
+        self._favicon_prefetch = fn
+
     def _maybe_record_domain(self, fg_short: str, sec_add: int, now_utc) -> None:
         """浏览器 domain 采集与记录。
 
@@ -1009,6 +1030,10 @@ class AppController:
         - 仅当「开关开 且 前台是浏览器」时激活探针（set_active(True)）；
         - 否则 set_active(False) 并直接返回（不写 repo）；
         - domain 为空（内部页/搜索词/采样过期）时丢弃，不写 repo。
+
+        favicon 预取也挂在这里：此刻用户**正停留在该站点**（前台浏览器 + 正在计时），
+        抓取请求与用户自己的浏览流量同时发生，而不是等打开「网站」统计页时才去抓——
+        那时用户早已离开，对方服务器日志上会多出一次孤立的回访。
         """
         is_browser = fg_short in BROWSER_APP_SHORTS
         rec_browser = bool(getattr(self.cfg, "record_browser_enabled", False))
@@ -1022,6 +1047,59 @@ class AppController:
             self.repo.add_domain_usage(
                 DomainDelta(domain=dom, seconds=int(sec_add), utc_ts=now_utc)
             )
+            self._maybe_prefetch_favicon(dom, int(sec_add), now_utc)
+
+    def _maybe_prefetch_favicon(self, host: str, sec_add: int, now_utc) -> None:
+        """趁用户还在该站点时预取 favicon（非阻塞，异常绝不上抛到 tick 循环）。
+
+        两道收口，尽量少发请求：
+        - **按站点归并**：抓的是 `site_key(host)` 而不是原始子域名，所以
+          `space.bilibili.com`/`t.bilibili.com` 共用 `bilibili.com` 一次抓取。这也让预取
+          的 key 与左栏展示用的 key 一致（展示层同样按 site_key 归并），不会抓了一个键、
+          UI 却查另一个键。「独立统计名单」里的子站点（默认 mail/drive/photos.google.com）
+          按用户配置仍各自成键、各抓各的图标——否则三者会显示同一个 Google 图标。
+        - **时长门槛**：站点当天累计满 `FAVICON_PREFETCH_MIN_SECONDS` 才抓。
+
+        再往下的「已经抓过就不抓」由 `FaviconService.prefetch` 的本地审计负责。
+        """
+        fn = getattr(self, "_favicon_prefetch", None)
+        if fn is None:
+            return
+        try:
+            independent = getattr(self.cfg, "site_independent_hosts", None) or ()
+            key = site_key(host, independent)
+            if not key:
+                return
+            if self._favicon_site_seconds(key, sec_add, now_utc) < FAVICON_PREFETCH_MIN_SECONDS:
+                return
+            fn(key)
+        except Exception:  # noqa: BLE001 - 预取失败绝不能影响计时
+            log.debug("favicon prefetch failed host=%s", host, exc_info=True)
+
+    def _favicon_site_seconds(self, key: str, sec_add: int, now_utc) -> int:
+        """累加并返回站点 `key` 当天的秒数（跨日自动清零）。
+
+        首次见到某 key 时从 repo 播种当天已有累计——否则进程重启会把已经攒够时长的
+        站点打回从零，白等一分钟。播种按 site_key 归并，与门槛口径一致。
+        """
+        day = now_utc.astimezone().date().isoformat()
+        if day != self._favicon_secs_day:
+            self._favicon_secs_day = day
+            self._favicon_secs = {}
+        if key not in self._favicon_secs:
+            seeded = 0
+            try:
+                usage = self.repo.get_daily_domain_usage(day) or {}
+                independent = getattr(self.cfg, "site_independent_hosts", None) or ()
+                seeded = int(merge_domain_usage(usage, independent).get(key, 0))
+            except Exception:  # noqa: BLE001 - 播种失败按 0 起算，不影响计时
+                log.debug("favicon prefetch seed failed key=%s", key, exc_info=True)
+            # 调用方已先写过 repo，播种值**已含本拍**的 sec_add，不能再加一次。
+            self._favicon_secs[key] = seeded
+            return seeded
+        total = self._favicon_secs[key] + int(sec_add)
+        self._favicon_secs[key] = total
+        return total
 
     def _tick_loop(self) -> None:
         interval = float(self.cfg.sample_interval_s or 1.0)

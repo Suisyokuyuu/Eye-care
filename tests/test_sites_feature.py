@@ -385,5 +385,59 @@ class SitesBridgeTests(unittest.TestCase):
         self.assertEqual(fired["n"], 1)
 
 
+# ── 6. 站点详情「清除图标缓存」按钮 ────────────────────────────────────────────
+class ClearIconCacheTests(unittest.TestCase):
+    _RAW = {"bilibili.com": 100, "space.bilibili.com": 50}
+
+    def _make(self, clearer=None, resolver=None):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        ctrl = _SitesCtrl(AppConfig(), Path(self._tmp.name) / "cfg.json", self._RAW)
+        io = build_sites_io(ctrl, persist=True, log=_LOG, today="2026-07-19",
+                            domain_icon_resolver=resolver or (lambda d: "ic:" + d),
+                            domain_icon_clearer=clearer)
+        return SitesBridge(io)
+
+    def test_clear_icon_calls_clearer_with_current_site(self):
+        cleared: list = []
+        bridge = self._make(clearer=lambda sk: (cleared.append(sk), True)[1])
+        bridge.openSite("bilibili.com")
+        bridge.clearIcon()
+        self.assertEqual(cleared, ["bilibili.com"])
+
+    def test_clear_icon_emits_signal_for_left_panel(self):
+        # 左栏靠这个信号丢掉自己那份 data_url 缓存，否则卡片还显示旧图标
+        fired = {"n": 0}
+        bridge = self._make(clearer=lambda sk: True)
+        bridge.iconCacheCleared.connect(lambda: fired.__setitem__("n", fired["n"] + 1))
+        bridge.openSite("bilibili.com")
+        bridge.clearIcon()
+        self.assertEqual(fired["n"], 1)
+
+    def test_clear_icon_drops_local_resolve_cache(self):
+        # 清除后详情页要重新解析图标，不能拿着旧的 data_url
+        state = {"v": "old"}
+        bridge = self._make(clearer=lambda sk: True,
+                            resolver=lambda d: state["v"])
+        bridge.openSite("bilibili.com")
+        self.assertEqual(bridge.detail["icon"], "old")
+        state["v"] = "new"
+        bridge.clearIcon()
+        self.assertEqual(bridge.detail["icon"], "new")
+
+    def test_clear_icon_without_open_site_is_noop(self):
+        cleared: list = []
+        bridge = self._make(clearer=lambda sk: (cleared.append(sk), True)[1])
+        bridge.clearIcon()          # 没打开任何站点
+        self.assertEqual(cleared, [])
+
+    def test_clear_icon_without_clearer_is_safe(self):
+        # 预览沙箱没有 FaviconService → clearer=None，按钮点了不该炸
+        bridge = self._make(clearer=None)
+        bridge.openSite("bilibili.com")
+        bridge.clearIcon()
+        self.assertEqual(bridge.detail["siteKey"], "bilibili.com")
+
+
 if __name__ == "__main__":
     unittest.main()

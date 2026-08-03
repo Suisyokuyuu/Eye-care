@@ -175,7 +175,38 @@ Item {
             Rectangle { Layout.fillWidth: true; height: 1; color: "#1affffff" }
             RowLayout {
                 Layout.fillWidth: true; Layout.margins: 16; spacing: 8
-                Item { Layout.fillWidth: true }
+
+                // 清除图标缓存：站点换了 logo、或抓到的图标不对时用。只删本地缓存，
+                // 不会立刻联网——下次访问该站点累计够时长才会重抓（与预取规则一致）。
+                Rectangle {
+                    id: clearBtn
+                    property bool done: false
+                    width: 122; height: 38; radius: 8
+                    color: clearMa.containsMouse ? "#1E293B" : "transparent"
+                    border.color: "#1affffff"; border.width: 1
+                    Text {
+                        anchors.centerIn: parent
+                        text: clearBtn.done ? "已清除" : "清除图标缓存"
+                        color: clearBtn.done ? "#4ADE80" : "#cbd5e1"
+                        font.pixelSize: 13; font.weight: Font.Medium
+                    }
+                    MouseArea {
+                        id: clearMa
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (page.bridge) page.bridge.clearIcon();
+                            clearBtn.done = true; clearDoneTimer.restart();
+                        }
+                    }
+                    Timer { id: clearDoneTimer; interval: 1600; onTriggered: clearBtn.done = false }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "下次访问该站点满 1 分钟后重新抓取"
+                    color: "#6B7280"; font.pixelSize: 11
+                    elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter
+                }
+
                 Rectangle {
                     width: 96; height: 38; radius: 8; color: closeMa.containsMouse ? "#0F172A" : "#1E293B"; border.color: "#1affffff"; border.width: 1
                     Text { anchors.centerIn: parent; text: "关闭"; color: "#fff"; font.pixelSize: 14; font.weight: Font.Medium }

@@ -1129,6 +1129,12 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             bridges["sitesBridge"].configApplied.connect(bridges["rightPanelBridge"].refresh)
         except Exception:
             pass
+        # 站点详情页「清除图标缓存」→ 左栏丢掉自己那份 data_url 缓存，否则卡片仍显示旧图标。
+        try:
+            bridges["sitesBridge"].iconCacheCleared.connect(
+                bridges["leftPanelBridge"].clearDomainIconCache)
+        except Exception:
+            pass
 
         # 10s 轮询刷新左右栏
         poll = QTimer()
@@ -1185,17 +1191,19 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 notifier.stop(timeout_s=2.0)
             except Exception:
                 log.exception("qt shutdown: notifier.stop failed")
+        # 先停 controller 再停 favicon：controller 的 tick 线程是 favicon 预取的生产者，
+        # 反过来会让关闭途中的预取又把 worker 唤起（FaviconService 侧另有 _stopped 兜底）。
+        if controller is not None:
+            try:
+                controller.stop()
+            except Exception:
+                log.exception("qt shutdown: controller.stop failed")
         favicon = (_qml_refs.get("bridges") or {}).get("_faviconService")
         if favicon is not None:
             try:
                 favicon.stop(timeout_s=2.0)
             except Exception:
                 log.exception("qt shutdown: favicon.stop failed")
-        if controller is not None:
-            try:
-                controller.stop()
-            except Exception:
-                log.exception("qt shutdown: controller.stop failed")
 
     app.aboutToQuit.connect(_shutdown)
 

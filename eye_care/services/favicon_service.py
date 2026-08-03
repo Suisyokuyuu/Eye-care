@@ -126,7 +126,7 @@ def _should_retry(entry: Optional[dict], now: float) -> bool:
     """负缓存条目 `entry`（失败记录）在时刻 `now` 是否已到期、可以重新入队抓取。
 
     纯函数：`entry` 为空（从未失败过）视为可重试；否则按 `next_retry_ts` 判断。
-    仅用于**失败**条目——成功（`ok=True`）条目的取用逻辑在 `FaviconService.get_icon`
+    仅用于**失败**条目——成功（`ok=True`）条目的判定在 `FaviconService.prefetch`
     里单独处理（磁盘文件缺失时无视退避直接重新入队，因为那是本地缓存损坏而非远端失败）。
     """
     if not entry:
@@ -156,11 +156,17 @@ class FaviconService:
         self._lock = threading.Lock()
         self._mem_cache: dict = {}          # domain -> data url（仅正向命中）
         self._index: Optional[dict] = None  # 惰性加载
+        # 已确认「索引记 ok 且 PNG 文件在」的 domain。prefetch 每拍都被调用，没这个集合
+        # 就要每拍 stat 一次磁盘；本 session 内认定不变（外部删缓存目录需重启才重抓）。
+        self._verified: set = set()
 
         self._queue: "queue.Queue" = queue.Queue()
         self._queued: set = set()
         self._worker: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        # stop() 之后永久封停：关闭期间 controller 的 tick 线程可能还在预取，
+        # 不加这道闸，`_ensure_worker` 会清掉 _stop_evt 把 worker 复活，退出途中再发一次网络请求。
+        self._stopped = False
 
     # ------------------------------------------------------------------
     # 目录 / 索引（惰性创建，线程间用 self._lock 互斥）
@@ -202,6 +208,12 @@ class FaviconService:
     # 公共 API
     # ------------------------------------------------------------------
     def get_icon(self, domain: str) -> str:
+        """domain → `data:image/png;base64,...`；**只读本地缓存，永不发起抓取**。
+
+        UI 渲染走这里，所以打开「网站」统计页/站点详情页不产生任何网络请求。
+        抓取只由 `prefetch()` 触发（见 `AppController._maybe_record_domain`：用户正
+        停留在该站点、且当天累计够久时才抓）。未命中返回 `""`，QML 侧走首字母兜底。
+        """
         dom = _normalize_domain(domain)
         if not dom:
             return ""
@@ -216,36 +228,94 @@ class FaviconService:
             entry = idx.get(dom)
             entry = dict(entry) if isinstance(entry, dict) else None
 
-        need_fetch = True
         if entry and entry.get("ok") and entry.get("file"):
             data_url = self._read_png_as_data_url(str(entry["file"]))
             if data_url:
                 with self._lock:
                     self._mem_cache[dom] = data_url
                 return data_url
-            # 索引说成功了，但磁盘文件缺失（缓存损坏）——无视退避，直接重新抓取。
-            need_fetch = True
-        elif entry and not entry.get("ok"):
-            need_fetch = _should_retry(entry, time.time())
-        # entry is None -> 从未尝试过，需要抓取
-
-        if not need_fetch:
-            return ""
-
-        with self._lock:
-            already_queued = dom in self._queued
-            if not already_queued:
-                self._queued.add(dom)
-        if not already_queued:
-            self._ensure_worker()
-            try:
-                self._queue.put_nowait(dom)
-            except Exception:  # noqa: BLE001
-                with self._lock:
-                    self._queued.discard(dom)
+            # 索引说成功了，但磁盘文件缺失（缓存损坏）——留给 prefetch 重抓。
         return ""
 
+    def prefetch(self, domain: str) -> None:
+        """本地审计后按需入队抓取（非阻塞，唯一的联网入口）。
+
+        入队前把本地全查一遍，命中任一条即直接返回、**不发请求**：
+          1. 内存缓存已有；
+          2. 索引记 `ok` 且 PNG 文件还在（抓过一次就永不再抓）；
+          3. 失败条目的退避期未到（`_should_retry`）；
+          4. 已在抓取队列里。
+        """
+        dom = _normalize_domain(domain)
+        if not dom:
+            return
+
+        with self._lock:
+            if (self._stopped or dom in self._mem_cache
+                    or dom in self._verified or dom in self._queued):
+                return
+
+        idx = self._load_index()
+        with self._lock:
+            entry = idx.get(dom)
+            entry = dict(entry) if isinstance(entry, dict) else None
+
+        if entry and entry.get("ok") and entry.get("file"):
+            # 文件还在 → 已抓过，不再抓；文件缺失（本地缓存损坏）才无视退避重抓。
+            if (self._icons_dir / str(entry["file"])).exists():
+                with self._lock:
+                    self._verified.add(dom)   # 记住，避免每拍 stat 磁盘
+                return
+        elif entry and not entry.get("ok"):
+            if not _should_retry(entry, time.time()):
+                return
+
+        with self._lock:
+            if self._stopped or dom in self._queued:
+                return
+            self._queued.add(dom)
+        self._ensure_worker()
+        try:
+            self._queue.put_nowait(dom)
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                self._queued.discard(dom)
+
+    def clear(self, domain: str) -> bool:
+        """删掉某 domain 的图标缓存（PNG 文件 + 索引条目 + 内存/已确认缓存）。
+
+        用途：站点换了 logo，或抓到的图标不对。清完**不会立刻联网**——下次用户访问
+        该站点且当天累计够时长时，由 `prefetch` 重抓，与「只在访问网站时抓取」一致。
+        顺带清掉失败条目的负缓存，所以也可用来立刻重试一个抓失败的站点。
+        返回是否确实清掉了东西。
+        """
+        dom = _normalize_domain(domain)
+        if not dom:
+            return False
+
+        idx = self._load_index()
+        with self._lock:
+            entry = idx.pop(dom, None)
+            if entry is not None:
+                self._index = idx
+                self._save_index_locked()
+            self._mem_cache.pop(dom, None)
+            self._verified.discard(dom)
+            file_name = str((entry or {}).get("file") or "")
+
+        removed = entry is not None
+        if file_name:
+            try:
+                (self._icons_dir / file_name).unlink()
+                removed = True
+            except OSError as exc:
+                self._log.debug("favicon: clear unlink failed domain=%s err=%s",
+                                dom, type(exc).__name__)
+        return removed
+
     def stop(self, timeout_s: float = 2.0) -> None:
+        with self._lock:
+            self._stopped = True
         self._stop_evt.set()
         try:
             self._queue.put_nowait(None)  # 唤醒阻塞在 get() 上的 worker
@@ -259,6 +329,9 @@ class FaviconService:
     # worker 线程
     # ------------------------------------------------------------------
     def _ensure_worker(self) -> None:
+        with self._lock:
+            if self._stopped:  # stop() 之后不再复活 worker
+                return
         if self._worker is not None and self._worker.is_alive():
             return
         self._stop_evt.clear()

@@ -40,7 +40,7 @@ BASE_PALETTE = [
 ]
 _HUE_DISTANCE_MIN = 18
 _PICK_AVOID_MAX_RETRIES = 8
-_ICON_MAX_RETRIES = 5   # 失败超过此次数（≈50s）后停止重试，防止无图标应用每拍都做磁盘 IO
+_ICON_MAX_RETRIES = 5   # 仅用于**应用**图标：失败超此次数后停止重试，防止无图标应用每拍都做磁盘 IO
 
 
 def _hash32(s: str) -> int:
@@ -196,8 +196,7 @@ class LeftPanelBridge(QObject):
         self._icon_cache: dict = {}           # app_short → data_url（非空才缓存）
         self._icon_miss_count: dict = {}      # app_short → 连续失败次数；超上限后停止重试
         self._domain_icon_resolver = domain_icon_resolver  # domain → favicon data_url（""=无/未命中）；生产注入
-        self._domain_icon_cache: dict = {}    # domain → data_url（非空才缓存）
-        self._domain_icon_miss: dict = {}     # domain → 连续失败次数；超上限后停止重试
+        self._domain_icon_cache: dict = {}    # domain → data_url（非空才缓存；未命中不设重试上限）
         self._date: Optional[str] = None   # 锚定日期（None=今天）；日历选择 → setDate
         self._range: Optional[tuple] = None  # 自定义范围 (start,end)；日历选范围 → setRange（覆盖 period/date）
         self._view = "app"        # app | category | browser
@@ -282,6 +281,17 @@ class LeftPanelBridge(QObject):
     @Slot()
     def refresh(self) -> None:
         """重新取 snapshot 并重算（10s 轮询 / 数据更新时调）。"""
+        self._recompute()
+
+    @Slot()
+    def clearDomainIconCache(self) -> None:
+        """丢掉 domain → data_url 的本地缓存并重算（站点详情页清除图标缓存后调）。
+
+        本类的缓存是「成功即永久」的，不清的话 FaviconService 那边删了文件、这里
+        仍然拿着旧 data_url，卡片上的图标不会变。图标已并入渲染签名，所以清完
+        `_recompute` 能正常 emit dataChanged，不会被签名跳过吞掉。
+        """
+        self._domain_icon_cache = {}
         self._recompute()
 
     # ── 取数 + 渲染 ───────────────────────────────────────────────────────
@@ -483,26 +493,24 @@ class LeftPanelBridge(QObject):
         return url
 
     def _domain_icon_for(self, domain: str) -> str:
-        """domain → favicon data_url（带缓存；无 resolver / 取不到 → ""）。
+        """domain → favicon data_url（成功永久缓存；无 resolver / 取不到 → ""）。
 
-        与 `_icon_for` 同构：成功永久缓存；未命中允许重试，超 _ICON_MAX_RETRIES 次后
-        本 session 放弃（FaviconService.get_icon 非阻塞，miss 会异步入队，下拍多半已抓到）。
+        **与 `_icon_for` 不同：未命中不设重试上限。** favicon 解析器只读本地缓存
+        （`FaviconService.get_icon` 不再联网、不再入队），未命中就是一次字典查找，
+        没有 `_icon_for` 要防的那种反复磁盘 IO。而图标要等用户在该站点累计够
+        `FAVICON_PREFETCH_MIN_SECONDS` 才会被抓下来，远超 5 拍——设上限会导致图标
+        抓到了却因为本 session 已放弃而不显示，直到重启。
         """
         if not self._domain_icon_resolver:
             return ""
         if domain in self._domain_icon_cache:
             return self._domain_icon_cache[domain]
-        if self._domain_icon_miss.get(domain, 0) >= _ICON_MAX_RETRIES:
-            return ""
         try:
             url = self._domain_icon_resolver(domain) or ""
         except Exception:
             url = ""
         if url:
             self._domain_icon_cache[domain] = url
-            self._domain_icon_miss.pop(domain, None)
-        else:
-            self._domain_icon_miss[domain] = self._domain_icon_miss.get(domain, 0) + 1
         return url
 
     # ── QML 可绑定属性 ────────────────────────────────────────────────────

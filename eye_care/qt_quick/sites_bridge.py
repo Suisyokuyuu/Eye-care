@@ -29,12 +29,12 @@ from .left_panel_bridge import format_work_time
 log = logging.getLogger(__name__)
 
 _SCAN_DAYS = 90
-_ICON_MAX_RETRIES = 5
 
 
 def build_sites_io(controller, *, persist: bool, log: Optional[logging.Logger] = None,
                    today: Optional[str] = None,
-                   domain_icon_resolver: Optional[Callable[[str], str]] = None):
+                   domain_icon_resolver: Optional[Callable[[str], str]] = None,
+                   domain_icon_clearer: Optional[Callable[[str], bool]] = None):
     """围绕 controller 造站点设置 IO（复用 ConfigService + favicon 解析器）。
 
     persist=True（生产）：set_independent/set_display_name 经 ConfigService.update_config 落库。
@@ -47,7 +47,6 @@ def build_sites_io(controller, *, persist: bool, log: Optional[logging.Logger] =
     cfgsvc = ConfigService(ServiceContext(controller=controller, log=lg))
     _today = today
     _icon_cache: dict = {}
-    _icon_miss: dict = {}
 
     def _today_str() -> str:
         return _today or _dt.date.today().isoformat()
@@ -74,21 +73,21 @@ def build_sites_io(controller, *, persist: bool, log: Optional[logging.Logger] =
             return {}
 
     def _icon_for(host: str) -> str:
+        """host → favicon data_url（成功永久缓存；取不到 → "" 走首字母兜底）。
+
+        未命中不设重试上限，理由同 `left_panel_bridge._domain_icon_for`：解析器只读
+        本地缓存不联网，而图标要等站点累计够时长才被抓下来，设上限会白白漏显示。
+        """
         if not host or not domain_icon_resolver:
             return ""
         if host in _icon_cache:
             return _icon_cache[host]
-        if _icon_miss.get(host, 0) >= _ICON_MAX_RETRIES:
-            return ""
         try:
             url = domain_icon_resolver(host) or ""
         except Exception:  # noqa: BLE001
             url = ""
         if url:
             _icon_cache[host] = url
-            _icon_miss.pop(host, None)
-        else:
-            _icon_miss[host] = _icon_miss.get(host, 0) + 1
         return url
 
     def _apply(body: dict) -> None:
@@ -165,6 +164,22 @@ def build_sites_io(controller, *, persist: bool, log: Optional[logging.Logger] =
                 return
             _apply({"site_independent_hosts": cur})
 
+        def clear_icon(self, sk: str) -> bool:
+            """清掉该站点的图标缓存（不落配置，纯缓存操作，故不走 `_apply`/persist）。
+
+            预览沙箱下 domain_icon_clearer 为 None → 无操作返回 False。
+            """
+            sk = str(sk or "").strip().lower().rstrip(".")
+            if not sk or not domain_icon_clearer:
+                return False
+            try:
+                ok = bool(domain_icon_clearer(sk))
+            except Exception as e:  # noqa: BLE001
+                lg.warning("sites: 清除图标缓存失败 %s: %s", sk, e)
+                return False
+            _icon_cache.pop(sk, None)   # 本地解析缓存也要丢，否则详情页还显示旧图标
+            return ok
+
         def set_display_name(self, sk: str, name: str) -> None:
             sk = str(sk or "").strip().lower().rstrip(".")
             if not sk:
@@ -186,6 +201,7 @@ class SitesBridge(QObject):
     sitesListChanged = Signal()
     detailChanged = Signal()
     configApplied = Signal()   # 归并规则/显示名变更 → runtime_shell 接到左右栏 refresh
+    iconCacheCleared = Signal()  # 图标缓存被清 → 左栏需丢掉自己那份 data_url 缓存
 
     def __init__(self, io, *, parent=None):
         super().__init__(parent)
@@ -245,6 +261,28 @@ class SitesBridge(QObject):
             log.warning("setIndependent 失败 %s=%s: %s", host, on, e)
             return
         self._after_config_change()
+
+    @Slot()
+    def clearIcon(self) -> None:
+        """清掉当前站点的图标缓存（详情页「清除图标缓存」按钮）。
+
+        只动缓存不动配置，所以不走 `_after_config_change`：刷新详情 + 列表让图标立刻
+        变回首字母，再 emit `iconCacheCleared` 让左栏丢掉它自己那份 data_url 缓存。
+        """
+        if not self._current:
+            return
+        try:
+            self._io.clear_icon(self._current)
+        except Exception as e:  # noqa: BLE001
+            log.warning("clearIcon 失败 %s: %s", self._current, e)
+            return
+        try:
+            self._detail = self._io.detail(self._current)
+            self.detailChanged.emit()
+        except Exception as e:  # noqa: BLE001
+            log.warning("site detail 刷新失败 %s: %s", self._current, e)
+        self.reload()
+        self.iconCacheCleared.emit()
 
     @Slot(str, str)
     def setDisplayName(self, site_key_arg: str, name: str) -> None:

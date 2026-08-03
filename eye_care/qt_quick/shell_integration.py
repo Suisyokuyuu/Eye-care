@@ -51,10 +51,20 @@ def _build_domain_icon_resolver(controller, lg):
         return None, None
 
     def resolver(domain: str) -> str:
+        # get_icon 只读本地缓存，渲染永不联网（抓取全部由下面的预取回调触发）。
         try:
             return service.get_icon(domain) or ""
         except Exception:
             return ""
+
+    # 预取接线：controller 每拍在「用户正停留在某站点」且当天累计够久时回调，抓取便与
+    # 真实浏览同时发生（详见 AppController._maybe_prefetch_favicon）。controller 不认识
+    # FaviconService，只持有这个非阻塞回调；没接上 → 全程不抓，图标走首字母兜底。
+    try:
+        controller.set_favicon_prefetch(service.prefetch)
+    except Exception:
+        lg.warning("favicon 预取接线失败 → 不再抓取图标，domain 卡片走首字母兜底", exc_info=True)
+
     return resolver, service
 
 
@@ -96,8 +106,11 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
     apps = AppsBridge(build_apps_io(controller, persist=persist, log=lg))
 
     # 站点设置/详情桥：复用同一 favicon 解析器（共享 FaviconService，不另建）。
+    # clearer 让详情页能清掉单个站点的图标缓存；无 service（构建失败）时为 None → 按钮无操作。
+    domain_icon_clearer = favicon_service.clear if favicon_service is not None else None
     sites = SitesBridge(build_sites_io(controller, persist=persist, log=lg,
-                                       today=today, domain_icon_resolver=domain_icon_resolver))
+                                       today=today, domain_icon_resolver=domain_icon_resolver,
+                                       domain_icon_clearer=domain_icon_clearer))
 
     u_checker, u_opener = build_update_io(controller, lg)
     update = UpdateBridge(u_checker, u_opener)

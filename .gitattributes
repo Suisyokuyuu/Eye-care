@@ -1,0 +1,22 @@
+# 行尾符统一规则。
+#
+# 本项目在 Windows 上运行、在 Linux 副本里开发，来回同步时行尾符会漂
+# （曾出现整个工作区变 CRLF、git diff 里 130 多个文件全是噪音）。这里钉死：
+#
+#   - 仓库里一律存 LF（Python 项目惯例，diff 干净）。
+#   - 检出到工作区时也用 LF —— 唯独 .bat/.cmd 强制 CRLF。
+#
+# .bat 必须 CRLF 的原因：cmd.exe 是**按字节偏移**定位的（同一个机制曾让
+# 非 ASCII 字节把 .bat 解析位置搞乱，见 CLAUDE.md 里 CP932 那段）。LF-only
+# 的批处理配上 goto/label 是已知雷区，多数时候能跑但会偶发跳错位置，而
+# menu.bat / install_deps.bat 各有 9 个 goto、5 个 label。
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：不做任何行尾符转换
+*.png binary
+*.ico binary
+*.wav binary
+*.bundle binary

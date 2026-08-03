@@ -248,7 +248,23 @@ Item {
                         Check { text: "全屏时自动勿扰"; checked: page.fullscreenDnd; onToggled: page.fullscreenDnd = v }
                         HelpText { text: "检测到前台应用进入全屏（如游戏 / 全屏视频）时自动切换到勿扰模式，退出全屏后自动恢复。" }
 
-                        Check { text: "记录浏览器数据（仅域名）"; checked: page.recordBrowser; onToggled: page.recordBrowser = v }
+                        Check {
+                            id: browserCheck
+                            text: "记录浏览器数据（仅域名）"
+                            checked: page.recordBrowser
+                            onToggled: page.recordBrowser = v
+                            tip: "开启后本功能会联网：为网站卡片抓取图标（favicon，即浏览器标签页上的小图标）。\n\n"
+                               + "• 只在你实际访问某站点、且当天累计满 1 分钟后才抓\n"
+                               + "• 直接向该网站请求，不经过任何第三方服务器\n"
+                               + "• 每个站点只抓一次，成功后永久缓存、不再请求\n"
+                               + "• 子域名并入主域名，不重复抓取\n"
+                               + "• 抓不到就显示域名首字母，不影响统计\n\n"
+                               + "已缓存的图标可在「应用设置 → 网站 → 站点详情」里清除。"
+                            onTipRequested: function (mx, my) {
+                                page.showTip(browserCheck.tip, browserCheck.mapToItem(page, mx, my));
+                            }
+                            onTipDismissed: page.hideTip()
+                        }
                         Text {
                             text: "开启后左栏显示「浏览器」页签。仅记录网站域名（如 baidu.com），不记录完整网址与页面标题。"
                             color: "#94a3b8"; font.pixelSize: 12
@@ -320,6 +336,55 @@ Item {
         }
     }
 
+    // ── 鼠标跟随气泡（放在 page 顶层：卡片与 Flickable 都 clip，放里面会被裁掉）──
+    Item {
+        id: hoverTip
+        anchors.fill: parent
+        z: 999
+        // 纯展示层，绝不吃鼠标事件——否则会挡住底下的复选框
+        enabled: false
+
+        property string tipText: ""
+        property real px: 0
+        property real py: 0
+
+        visible: opacity > 0.01
+        opacity: tipText !== "" ? 1.0 : 0.0
+        Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+
+        Rectangle {
+            // 默认落在光标右下方；贴近边缘时翻到另一侧，保证整个气泡留在页面内
+            x: (hoverTip.px + 18 + width <= hoverTip.width - 8)
+               ? hoverTip.px + 18
+               : Math.max(8, hoverTip.px - 18 - width)
+            y: (hoverTip.py + 20 + height <= hoverTip.height - 8)
+               ? hoverTip.py + 20
+               : Math.max(8, hoverTip.py - 20 - height)
+            width: tipLabel.width + 24
+            height: tipLabel.height + 18
+            radius: 8
+            color: "#FA0B1120"
+            border.color: "#40ffffff"; border.width: 1
+
+            Text {
+                id: tipLabel
+                anchors.centerIn: parent
+                width: Math.min(implicitWidth, 340)
+                text: hoverTip.tipText
+                color: "#e5e7eb"; font.pixelSize: 12
+                lineHeight: 1.25
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    function showTip(text, pt) {
+        hoverTip.px = pt.x;
+        hoverTip.py = pt.y;
+        hoverTip.tipText = text;
+    }
+    function hideTip() { hoverTip.tipText = ""; }
+
     // ── 内联组件 ──
 
     component FieldLabel: Text { color: "#D1D5DB"; font.pixelSize: 14; font.weight: Font.Medium }
@@ -374,7 +439,11 @@ Item {
         property string text: ""
         property bool checked: false
         property bool v: false
+        // 非空则开启悬停气泡：鼠标移到本行时在光标旁弹出说明（位置由使用处映射到 page 坐标）。
+        property string tip: ""
         signal toggled()
+        signal tipRequested(real mx, real my)
+        signal tipDismissed()
         implicitWidth: ckRow.implicitWidth
         implicitHeight: ckRow.implicitHeight
         Row {
@@ -398,10 +467,26 @@ Item {
                 }
             }
             Text { text: ck.text; color: "#e5e7eb"; font.pixelSize: 14; anchors.verticalCenter: parent.verticalCenter }
+            // 有气泡说明时给个 ⓘ，否则纯悬停提示没人发现得了
+            Rectangle {
+                visible: ck.tip !== ""
+                anchors.verticalCenter: parent.verticalCenter
+                width: 15; height: 15; radius: 7.5
+                color: "transparent"; border.color: "#60A5FA"; border.width: 1
+                Text {
+                    anchors.centerIn: parent; text: "i"
+                    color: "#60A5FA"; font.pixelSize: 10; font.bold: true
+                }
+            }
         }
         MouseArea {
+            id: ckMa
             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            hoverEnabled: ck.tip !== ""
             onClicked: { ck.v = !ck.checked; ck.toggled(); }
+            onEntered: ck.tipRequested(mouseX, mouseY)
+            onPositionChanged: function (m) { if (ckMa.containsMouse) ck.tipRequested(m.x, m.y); }
+            onExited: ck.tipDismissed()
         }
     }
 

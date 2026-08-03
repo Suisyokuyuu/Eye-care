@@ -180,8 +180,8 @@ class LeftPanelBrowserBridgeTests(unittest.TestCase):
         bridge.refresh()
         self.assertEqual(fired["n"], 1)
 
-    # 附：domain icon miss 上限后不再调 resolver
-    def test_domain_icon_miss_cap(self) -> None:
+    # 附：domain icon 未命中不设重试上限（解析器只读本地缓存，不联网）
+    def test_domain_icon_retries_indefinitely(self) -> None:
         calls = {"n": 0}
 
         def resolver(_d):
@@ -191,9 +191,33 @@ class LeftPanelBrowserBridgeTests(unittest.TestCase):
         bridge = self._make(browser_enabled=True, domain_resolver=resolver)
         for _ in range(20):
             bridge._domain_icon_for("miss.com")
-        # 达到 _ICON_MAX_RETRIES（5）后不再调用
-        from eye_care.qt_quick.left_panel_bridge import _ICON_MAX_RETRIES
-        self.assertEqual(calls["n"], _ICON_MAX_RETRIES)
+        # 图标要等站点累计够时长才被抓下来，远超 5 拍；设上限会导致抓到了也不显示
+        self.assertEqual(calls["n"], 20)
+
+    def test_clear_domain_icon_cache_forces_reresolve(self) -> None:
+        # 站点详情页清除图标缓存后，左栏必须丢掉自己那份 data_url，否则卡片仍是旧图标
+        state = {"v": "data:old"}
+        bridge = self._make(browser_enabled=True, domain_resolver=lambda d: state["v"])
+        self.assertEqual(bridge._domain_icon_for("bilibili.com"), "data:old")
+
+        state["v"] = ""                      # 缓存被清 → 解析器取不到了
+        self.assertEqual(bridge._domain_icon_for("bilibili.com"), "data:old")  # 仍吃旧缓存
+
+        bridge.clearDomainIconCache()
+        self.assertEqual(bridge._domain_icon_for("bilibili.com"), "")
+
+    def test_domain_icon_success_is_cached(self) -> None:
+        calls = {"n": 0}
+
+        def resolver(_d):
+            calls["n"] += 1
+            return "data:image/png;base64,AAA"
+
+        bridge = self._make(browser_enabled=True, domain_resolver=resolver)
+        for _ in range(5):
+            url = bridge._domain_icon_for("hit.com")
+        self.assertEqual(url, "data:image/png;base64,AAA")
+        self.assertEqual(calls["n"], 1)   # 命中后永久缓存，不再调解析器
 
 
 # ── SnapshotService 3 新键 ───────────────────────────────────────────────────
