@@ -22,6 +22,7 @@ PowerShell；这里改用 Python——打包本来就要 Python，且逻辑可�
   [1] 修改版本号     调 sync_version.py，同时写 version.py 与 version_info.txt
   [2] 打包 exe       可顺便改版本号，然后转发给 scripts/build_exe.bat
   [3] 清理构建产物   删 dist/ build/，再转发给 scripts/clear_pycache.bat
+  [4] 发布自动更新   调 publish_release.py，启动 GitHub Actions
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ import sync_version as sv  # noqa: E402  （同目录脚本，插完 path 才能
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILD_BAT = PROJECT_ROOT / "scripts" / "build_exe.bat"
 CLEAN_BAT = PROJECT_ROOT / "scripts" / "clear_pycache.bat"
+PUBLISH_SCRIPT = PROJECT_ROOT / "scripts" / "publish_release.py"
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
 
@@ -220,6 +222,29 @@ def action_clean() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 4) 发布自动更新
+# ---------------------------------------------------------------------------
+
+def action_publish() -> None:
+    _header("发布自动更新")
+    print("  将启动 GitHub Actions，在固定 latest Release 中发布新版本。")
+    print("  不需要、也不会创建按版本命名的 Tag。")
+    print()
+    if not PUBLISH_SCRIPT.exists():
+        _err(f"缺少文件：{PUBLISH_SCRIPT}")
+        _pause()
+        return
+    try:
+        rc = subprocess.call([sys.executable, str(PUBLISH_SCRIPT)], cwd=str(PROJECT_ROOT))
+    except OSError as exc:
+        _err(f"无法运行发布脚本：{exc}")
+        _pause()
+        return
+    if rc != 0:
+        _err(f"发布启动器执行失败（退出码 {rc}）。")
+
+
+# ---------------------------------------------------------------------------
 # 主菜单
 # ---------------------------------------------------------------------------
 
@@ -227,6 +252,7 @@ MENU_ITEMS = (
     ("1", "修改版本号      同时写 version.py 与 version_info.txt", action_set_version),
     ("2", "打包 exe        可顺便改版本号，打包前自动同步", action_build),
     ("3", "清理构建产物    删除 dist / build / __pycache__", action_clean),
+    ("4", "发布自动更新    启动 GitHub Actions，无需手动 Tag", action_publish),
 )
 
 
