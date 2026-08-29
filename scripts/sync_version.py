@@ -155,6 +155,15 @@ def sync(new_version: str | None = None) -> tuple[str, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows GitHub Runner may expose a CP1252 console.  This command prints
+    # Chinese status text, so make direct CLI use deterministic as well as the
+    # menu.bat path, which already exports the same UTF-8 environment.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
     ap = argparse.ArgumentParser(
         description="同步版本号：version.py（真源）→ version_info.txt（生成物）"
     )
