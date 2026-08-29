@@ -5,7 +5,7 @@ import QtQuick.Effects
 // 全屏休息遮罩（QML 原生版，复刻原 web rest 遮罩 rest/rest.css 观感）。
 // - 无边框 / 置顶 / Tool / 透明背景，磨砂由 Windows Acrylic（Python 侧 win_effects, tint 0x33101826）负责。
 // - 关键口径（沿用 web 版）：Web/QML 层不做模糊，只铺极淡暗色 + 半透明卡片；模糊全交给窗口级 Acrylic。
-// - 倒计时文本由 Python 每 250ms 写 timeText（与 web 一致，用墙钟算余量，避免计时漂移）。
+// - 倒计时文本由 Python 每 250ms 写 timeText（用单调时钟算余量，避免漂移和系统校时跳变）。
 // - 拦截除「跳过本轮」外的一切点击，防穿透到后面窗口。
 // 契约：Python 读写 timeText / overlayVisible，监听 actionTriggered(name)，name 目前仅 "snooze"。
 Window {

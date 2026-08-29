@@ -75,9 +75,11 @@ class NotificationManager:
         cycle = int(rest.get("cycle") or 0)
         local_date = local_date_today()
         prompt_key = (local_date, cycle, work_bucket)
-        now = time.time()
+        now = time.monotonic()
 
-        if now - self._last_show_time < self._min_interval_s:
+        # 0 表示本进程尚未展示过提醒；不能拿系统启动后的 monotonic 秒数与 0 做冷却，
+        # 否则开机不足 min_interval_s 时首条提醒会被误挡。
+        if self._last_show_time > 0.0 and now - self._last_show_time < self._min_interval_s:
             return
 
         with self._pending_lock:
@@ -131,7 +133,7 @@ class NotificationManager:
             if mark_notified:
                 self._shown_prompt_keys.add(prompt_key)
                 self._prune_shown_keys()
-            self._last_show_time = time.time()
+            self._last_show_time = time.monotonic()
             return
 
         if result is None:
@@ -150,7 +152,7 @@ class NotificationManager:
                 log.exception("notify: _mark_notified failed on fallback toast")
             self._shown_prompt_keys.add(prompt_key)
             self._prune_shown_keys()
-            self._last_show_time = time.time()
+            self._last_show_time = time.monotonic()
         except Exception as e:
             log.warning("rest notification fallback (toast) failed: %s", e, exc_info=True)
 

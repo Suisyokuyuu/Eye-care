@@ -181,6 +181,8 @@ def action_build() -> None:
     if rc == 0:
         _ok(f"打包结束（版本 {_current_version()}）。")
         print(f"    产物：{DIST_DIR / 'EyE Care'}")
+        print(f"    发布包：{DIST_DIR / f'EyE-Care-{_current_version()}-Windows-x64.zip'}")
+        print("    校验值：同名 .zip.sha256 文件")
         print('    可以右键 "EyE Care.exe" → 属性 → 详细信息，核对版本号。')
     else:
         _err(f"打包失败（退出码 {rc}），请看上面的报错。")

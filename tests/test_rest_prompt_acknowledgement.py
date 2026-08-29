@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from eye_care.controller.app_controller import AppController, ControllerState
 from eye_care.notify.notification_manager import NotificationManager
@@ -50,6 +51,21 @@ def _rest_state(controller: AppController) -> dict:
 
 
 class RestPromptAcknowledgementTests(unittest.TestCase):
+    def test_first_prompt_is_not_blocked_soon_after_system_boot(self) -> None:
+        controller = _controller()
+        posted: list[tuple[dict, tuple]] = []
+        manager = NotificationManager(
+            dispatcher=SimpleNamespace(
+                post_notify_show=lambda extra, key: posted.append((extra, key))
+            ),
+            min_interval_s=60,
+        )
+
+        with patch("eye_care.notify.notification_manager.time.monotonic", return_value=1.0):
+            manager.on_snapshot(controller._get_runtime_extra())
+
+        self.assertEqual(len(posted), 1)
+
     def test_dispatcher_receives_the_next_prompt_only_after_a_full_interval(self) -> None:
         controller = _controller()
         posted: list[tuple[dict, tuple]] = []

@@ -54,6 +54,7 @@ a = Analysis(
         'eye_care.qt_quick.apps_bridge',
         'eye_care.qt_quick.sites_bridge',
         'eye_care.qt_quick.update_bridge',
+        'eye_care.update_service',
         'eye_care.qt_quick.calendar_bridge',
         'eye_care.qt_quick.notify_overlay',
         'eye_care.qt_quick.rest_overlay',
@@ -63,6 +64,10 @@ a = Analysis(
         'comtypes.client',
         'eye_care.probes.browser_url',
         'eye_care.probes.win_browser_url',
+        # 会话可交互性探针：win_session 在 session.py 函数内延迟导入，显式列出避免
+        # 冻结包漏收后把探针失败误判成不可交互、导致发布版停止计时。
+        'eye_care.probes.session',
+        'eye_care.probes.win_session',
         'eye_care.services.favicon_service',
         # 站点归并规则（展示层）：仅函数内延迟 import（snapshot_service/api.common/sites_bridge），显式收进 PYZ。
         'eye_care.utils.site_rules',
@@ -75,6 +80,39 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
+
+# Independent one-file updater. The running app is copied to user_data/updates/runtime
+# before launch, so it can replace the entire one-dir application after the main PID exits.
+updater_a = Analysis(
+    ['updater_main.py'],
+    pathex=[project_root],
+    binaries=[],
+    datas=[],
+    hiddenimports=['eye_care.update_helper'],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=['PySide6', 'PIL', 'yaml', 'psutil', 'win32api', 'comtypes'],
+    noarchive=False,
+    optimize=0,
+)
+updater_pyz = PYZ(updater_a.pure)
+
+updater_exe = EXE(
+    updater_pyz,
+    updater_a.scripts,
+    updater_a.binaries,
+    updater_a.datas,
+    [],
+    name='EyE Care Updater',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    icon=['icon.ico'],
+)
 
 exe = EXE(
     pyz,
@@ -98,6 +136,7 @@ exe = EXE(
 
 coll = COLLECT(
     exe,
+    updater_exe,
     a.binaries,
     a.datas,
     strip=False,

@@ -74,6 +74,26 @@ if exist "%INTERNAL%\README.md" copy /y "%INTERNAL%\README.md" "%DISTDIR%\"
 
 if not exist "%DISTDIR%\user_data" mkdir "%DISTDIR%\user_data"
 
+REM PyInstaller also leaves the standalone updater beside the COLLECT folder.
+REM The copy inside DISTDIR is the shipped one; remove only the duplicate root artifact.
+if exist "%DISTDIR%\EyE Care Updater.exe" if exist "%CD%\dist\EyE Care Updater.exe" del /q "%CD%\dist\EyE Care Updater.exe"
+
+echo Preparing auto-update manifest and release archive...
+%PY_CMD% scripts\package_release.py "%DISTDIR%" --archive --output-dir "%CD%\dist"
+if errorlevel 1 (
+    echo Failed to prepare the auto-update release package.
+    pause
+    exit /b 1
+)
+
+echo Verifying release archive against its manifest...
+%PY_CMD% scripts\verify_release.py "%CD%\dist"
+if errorlevel 1 (
+    echo Release archive verification failed.
+    pause
+    exit /b 1
+)
+
 echo.
 echo ========================================
 echo Build completed successfully!

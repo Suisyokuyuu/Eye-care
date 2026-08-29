@@ -1,6 +1,6 @@
 """QML 全屏休息遮罩宿主。
 
-加载 RestOverlay.qml，负责：铺满指定屏幕、Windows Acrylic、淡入淡出、倒计时（墙钟驱动、
+加载 RestOverlay.qml，负责：铺满指定屏幕、Windows Acrylic、淡入淡出、倒计时（单调时钟驱动、
 每 250ms 刷 timeText）、到点自动完成、把「跳过本轮」动作转回调。后端业务（rest_complete /
 rest_snooze）由回调方接既有 controller，本类不碰业务——仅视图宿主 + 计时。
 
@@ -12,6 +12,7 @@ rest_snooze）由回调方接既有 controller，本类不碰业务——仅视�
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -56,7 +57,7 @@ class QmlRestOverlay:
         self._win_effects = win_effects
         self._screen = screen
         self._acrylic_applied = False
-        self._end_ms = 0
+        self._end_mono = 0.0
         self._duration = 0
 
         self._engine = QQmlApplicationEngine()
@@ -76,7 +77,7 @@ class QmlRestOverlay:
                 except Exception:
                     pass
 
-        # 倒计时：墙钟驱动，每 250ms 刷一次（与 web rest.js 一致，避免漂移）
+        # 倒计时：单调时钟驱动，每 250ms 刷一次；系统校时不会让倒计时跳变。
         self._tick_timer = QTimer()
         self._tick_timer.setInterval(250)
         self._tick_timer.timeout.connect(self._tick)
@@ -88,7 +89,7 @@ class QmlRestOverlay:
         self.sync_geometry()
         self.rest_started = True
         self._duration = max(1, int(duration_s or 20))
-        self._end_ms = int(time.time() * 1000) + self._duration * 1000
+        self._end_mono = time.monotonic() + self._duration
         self._win.setProperty("overlayVisible", False)  # 先归零，保证 Behavior 渐入
         self._win.setProperty("timeText", self._fmt(self._duration))
         self._win.setVisible(True)
@@ -144,9 +145,9 @@ class QmlRestOverlay:
 
     # ---- 内部 ----
     def _tick(self) -> None:
-        left = (self._end_ms - int(time.time() * 1000)) / 1000.0
+        left = self._end_mono - time.monotonic()
         self._win.setProperty("timeText", self._fmt(left))
-        if self._end_ms > 0 and left <= 0:
+        if self._end_mono > 0 and left <= 0:
             self._tick_timer.stop()
             self._log.info("qml.rest.auto_complete screen=%s", self.screen_idx)
             if callable(self._on_complete):
@@ -166,7 +167,8 @@ class QmlRestOverlay:
 
     @staticmethod
     def _fmt(sec) -> str:
-        sec = max(0, int(sec))
+        # 剩余 19.9 秒应显示 00:20；向下取整会让倒计时一出现就少一秒。
+        sec = max(0, int(math.ceil(float(sec))))
         return "%02d:%02d" % (sec // 60, sec % 60)
 
     def _apply_acrylic(self) -> None:

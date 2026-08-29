@@ -168,6 +168,11 @@ class SyncRoundTripTests(unittest.TestCase):
         with _quiet():
             self.assertEqual(sv.main(["nope"]), 2)
 
+    def test_generated_version_files_use_lf_on_windows_too(self) -> None:
+        sv.sync("1.3.1")
+        self.assertNotIn(b"\r\n", self._version_py.read_bytes())
+        self.assertNotIn(b"\r\n", self._version_info.read_bytes())
+
 
 class RepoStateTests(unittest.TestCase):
     """仓库里的两个文件必须是同步的——漏跑同步就在 CI/本地测试里暴露出来。"""
@@ -185,7 +190,6 @@ class RepoStateTests(unittest.TestCase):
 
     def test_repo_app_version_has_three_parts(self) -> None:
         self.assertRegex(sv.read_app_version(), r"^\d+\.\d+\.\d+$")
-
 
 if __name__ == "__main__":
     unittest.main()

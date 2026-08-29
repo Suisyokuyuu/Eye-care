@@ -45,6 +45,7 @@ class NotifierService:
         while not self._stop.is_set():
             try:
                 controller = self._controller_getter() if callable(self._controller_getter) else None
+                extra = None
                 if controller is not None:
                     _, extra = controller.snapshot_today(mark_prompted=False)
                 if extra:

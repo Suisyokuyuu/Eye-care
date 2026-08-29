@@ -131,6 +131,12 @@ VSVersionInfo(
 """
 
 
+def _write_utf8_lf(path: Path, text: str) -> None:
+    """Write generated source with repository-standard LF even on Windows."""
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
+
+
 def sync(new_version: str | None = None) -> tuple[str, str]:
     """把版本号落到两个文件。返回 (旧 APP_VERSION, 新 APP_VERSION)。
 
@@ -142,9 +148,9 @@ def sync(new_version: str | None = None) -> tuple[str, str]:
 
     if new != old:
         source = VERSION_PY.read_text(encoding="utf-8")
-        VERSION_PY.write_text(replace_app_version(source, new), encoding="utf-8")
+        _write_utf8_lf(VERSION_PY, replace_app_version(source, new))
 
-    VERSION_INFO.write_text(render_version_info(parts), encoding="utf-8")
+    _write_utf8_lf(VERSION_INFO, render_version_info(parts))
     return old, new
 
 

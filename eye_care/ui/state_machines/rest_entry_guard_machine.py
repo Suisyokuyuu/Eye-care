@@ -23,7 +23,7 @@ class RestEntryGuardMachine:
     def __init__(self, logger: logging.Logger) -> None:
         self._log = logger
         self._state = RestEntryGuardState.UNLOCKED
-        self._cooldown_end_at: float = 0.0  # 冷却结束时间戳（time.time()）
+        self._cooldown_end_at: float = 0.0  # 冷却结束时间戳（time.monotonic()）
 
     @property
     def state(self) -> RestEntryGuardState:
@@ -117,5 +117,5 @@ class RestEntryGuardMachine:
         if self._state != RestEntryGuardState.LOCKED_COOLDOWN:
             return 0
         import time
-        t = (now if now is not None else time.time())
+        t = (now if now is not None else time.monotonic())
         return max(0, int((self._cooldown_end_at - t) * 1000))

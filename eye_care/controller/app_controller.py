@@ -19,7 +19,8 @@ from ..diagnostics.diag_events import log_exception_summary
 from ..probes.browser_url import make_browser_watcher
 from ..probes.foreground import get_foreground
 from ..probes.fullscreen import is_foreground_fullscreen
-from ..probes.idle import get_idle_seconds
+from ..probes.idle import get_idle_seconds_checked
+from ..probes.session import is_user_session_interactive
 from ..ui.state_machines import RestEntryGuardMachine
 from ..ui.state_machines.types import RestEntryGuardState
 from ..utils.site_rules import merge_domain_usage, site_key
@@ -58,6 +59,8 @@ class ControllerState:
     force_idle: bool = False
     # 自动 idle：一段时间无操作时由正常模式自动进入，托盘/模式显示 idle；恢复操作后回到正常。勿扰时不自动进入。
     auto_idle: bool = False
+    # 当前 Windows 会话是否可见且可交互；锁屏、远程桌面断开时为 False。
+    session_interactive: bool = True
     # 勿扰来源：manual=用户显式选择；auto_app/auto_fullscreen=自动来源。
     # 自动来源之间允许直接交接，避免先恢复 normal、下一拍又进入 dnd 的闪烁。
     dnd_reason: Optional[str] = None  # "manual" | "auto_app" | "auto_fullscreen" | None
@@ -80,8 +83,10 @@ class AppController:
 
         self._stop = threading.Event()
         self._thr: Optional[threading.Thread] = None
-        self._last_flush = time.time()
-        self._last_checkpoint = time.time()
+        # 这些都是“经过多久”的调度，必须使用 monotonic；系统校时不应让 flush/checkpoint
+        # 停摆或连续触发。
+        self._last_flush = time.monotonic()
+        self._last_checkpoint = time.monotonic()
         self._checkpoint_inflight = False
         self._checkpoint_lock = threading.Lock()
 
@@ -99,6 +104,12 @@ class AppController:
         # auto_idle 防闪烁：记录进入 auto_idle 的时间，退出前需保持最小持续时间
         self._auto_idle_entered_at: float = 0.0
         self._auto_idle_min_duration: float = 1.0  # 最小保持 1 秒
+        # 远程会话断开/锁屏不一定能从 GetLastInputInfo 得到可靠 idle，单独累计不可交互时长。
+        self._session_inactive_since_mono: float = 0.0
+        self._idle_probe_failed_since_mono: float = 0.0
+        # 自动勿扰（全屏视频/游戏、指定应用）本身代表持续屏幕活动。记录最近一次这种
+        # 活动，退出勿扰时把此前累积的键鼠 idle 截断，确保到期提醒能立即释放。
+        self._last_screen_activity_mono: float = 0.0
         # 全屏勿扰去抖：原始 is_foreground_fullscreen() 会因前台短暂切换（通知/游戏内浮层/
         # alt-tab 一闪）频繁抖动，导致 dnd 反复横跳——刷爆事件日志、狂闪托盘、还会把
         # auto-settle 的判定吃掉。用连续同向计数做迟滞：进入要连续 True、退出要连续 False。
@@ -598,7 +609,7 @@ class AppController:
         with self._lock:
             self._rest_entry_guard.record_rest_entered()
         # 2 秒后自动解锁（即使遮罩没关）
-        cooldown_end_at = time.time() + REST_ENTRY_GUARD_COOLDOWN_S
+        cooldown_end_at = time.monotonic() + REST_ENTRY_GUARD_COOLDOWN_S
         with self._lock:
             if self._rest_entry_guard.state != RestEntryGuardState.LOCKED_ACTIVE:
                 return
@@ -621,7 +632,7 @@ class AppController:
                 except Exception as e:
                     log_exception_summary(log, "DIAG_EXCEPTION", "controller fallback", "degrade_continue", detail=str(e)[:200], reason_code="E_CONTROLLER_FALLBACK")
                 return
-            cooldown_end_at = time.time() + REST_ENTRY_GUARD_COOLDOWN_S
+            cooldown_end_at = time.monotonic() + REST_ENTRY_GUARD_COOLDOWN_S
             if self._rest_entry_guard.record_rest_closed(cooldown_end_at):
                 if self._rest_guard_cooldown_timer is not None:
                     try:
@@ -658,7 +669,7 @@ class AppController:
             g = self._rest_entry_guard
             return {
                 "start_enabled": g.is_start_allowed(),
-                "start_unlock_in_ms": g.unlock_in_ms(time.time()),
+                "start_unlock_in_ms": g.unlock_in_ms(time.monotonic()),
                 "start_block_reason": g.get_block_reason(),
             }
 
@@ -771,7 +782,7 @@ class AppController:
         """
         # 确保 app_paths 已加载（超时降级为空字典）
         self._ensure_app_paths_loaded(timeout=2.0)
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             app_paths = dict(self._app_paths)
             debug_notify = bool(self._debug_notify)
@@ -803,7 +814,19 @@ class AppController:
 
             should_prompt = False
             prompt_reason = ""
-            if due and (not notified) and ((next_prompt_work_s <= 0) or (work_s >= next_prompt_work_s)) and (now >= snooze_until) and (not self.state.is_dnd) and (not self.state.is_paused) and (not self.state.force_idle) and (not is_resting) and (not self.is_blacklisted(last_fg or "")):
+            if (
+                due
+                and (not notified)
+                and ((next_prompt_work_s <= 0) or (work_s >= next_prompt_work_s))
+                and (now >= snooze_until)
+                and (not self.state.is_dnd)
+                and (not self.state.is_paused)
+                and (not self.state.force_idle)
+                and (not self.state.auto_idle)
+                and bool(getattr(self.state, "session_interactive", True))
+                and (not is_resting)
+                and (not self.is_blacklisted(last_fg or ""))
+            ):
                 should_prompt = True
                 try:
                     from ..diagnostics.debug_switch import is_debug_enabled
@@ -876,7 +899,7 @@ class AppController:
             "start_block_reason": str(guard.get("start_block_reason", "") or ""),
         }
         if debug_notify:
-            now_ts = time.time()
+            now_ts = time.monotonic()
             if now_ts - float(self._debug_last_log_ts or 0.0) >= 5.0:
                 self._debug_last_log_ts = now_ts
                 log.info(
@@ -957,7 +980,7 @@ class AppController:
 
     def force_flush(self) -> None:
         self.repo.flush()
-        self._last_flush = time.time()
+        self._last_flush = time.monotonic()
 
     def force_checkpoint(self) -> None:
         """Trigger an immediate checkpoint (persist + truncate WAL) in background."""
@@ -978,16 +1001,16 @@ class AppController:
             self._checkpoint_inflight = True
 
         def _run():
-            t0 = time.time()
+            t0 = time.monotonic()
             try:
                 self.repo.merge()
-                log.info("checkpoint ok: reason=%s dur_ms=%s", reason, int((time.time()-t0)*1000))
+                log.info("checkpoint ok: reason=%s dur_ms=%s", reason, int((time.monotonic()-t0)*1000))
             except Exception:
                 log.exception("checkpoint failed: reason=%s", reason)
             finally:
                 with self._checkpoint_lock:
                     self._checkpoint_inflight = False
-                self._last_checkpoint = time.time()
+                self._last_checkpoint = time.monotonic()
 
         threading.Thread(target=_run, daemon=True, name="checkpoint").start()
 
@@ -1005,12 +1028,21 @@ class AppController:
         """
         try:
             idle_th = int(getattr(self.cfg, "idle_threshold_s", 60) or 60)
-            idle = int(get_idle_seconds())
+            session_interactive = bool(is_user_session_interactive())
+            self.state.session_interactive = session_interactive
+            if not session_interactive:
+                if not self.state.is_dnd and not self.state.force_idle and not self.state.auto_idle and not self._is_resting:
+                    self.state.auto_idle = True
+                    self._auto_idle_entered_at = time.monotonic()
+                    self._auto_idle_entry_idle = idle_th
+                return
+            idle_value = get_idle_seconds_checked()
+            idle = int(idle_value) if idle_value is not None else idle_th
             # 触发条件：idle 满足阈值 且 当前在 normal 模式（非 dnd/leave/auto_idle/resting）
             if idle >= idle_th:
                 if not self.state.is_dnd and not self.state.force_idle and not self.state.auto_idle and not self._is_resting:
                     self.state.auto_idle = True
-                    self._auto_idle_entered_at = time.time()
+                    self._auto_idle_entered_at = time.monotonic()
                     self._auto_idle_entry_idle = idle
         except Exception:
             log.exception("_compensate_auto_idle_on_exit_rest failed")
@@ -1104,7 +1136,7 @@ class AppController:
     def _tick_loop(self) -> None:
         interval = float(self.cfg.sample_interval_s or 1.0)
         while not self._stop.is_set():
-            t0 = time.time()
+            t0 = time.monotonic()
             try:
                 # --- tick elapsed seconds (monotonic) ---
                 now_mono = time.monotonic()
@@ -1113,34 +1145,64 @@ class AppController:
                     last_mono = now_mono
                 delta = max(0.0, now_mono - last_mono)
                 self._tick_mono_last = now_mono
-                self._tick_accum = float(self._tick_accum or 0.0) + delta
-                sec_add = int(self._tick_accum)
-                # keep fractional remainder
-                if sec_add > 0:
-                    self._tick_accum -= float(sec_add)
-                # cap to avoid huge jumps after long stalls (debugger / sleep)  # not quota-related
-                if sec_add > 5:
-                    sec_add = 5
-                # fallback: ensure progress when loop is near 1s but rounding produced 0
-                if sec_add <= 0 and delta >= 0.9:
-                    sec_add = 1
+                idle_th = int(getattr(self.cfg, "idle_threshold_s", 60) or 60)
+                rest_s_cfg = int(getattr(self.cfg, "reminder_rest_seconds", 20) or 20)
+                rested_gap_th = max(idle_th, rest_s_cfg)
+
+                # 睡眠/挂起期间没有任何前台采样证据，不能把恢复后的第一拍当成使用时间。
+                # 若未观测间隙已足以完成一次休息，同时重置连续用眼，避免唤醒/远程重连后
+                # 立刻弹出一条由待机时间造成的提示。
+                unobserved_rest_gap = last_mono > 0.0 and rested_gap_th > 0 and delta >= rested_gap_th
+                if unobserved_rest_gap:
+                    self._tick_accum = 0.0
+                    sec_add = 0
+                    self.rest_complete()
+                    self._rested_settled = True
+                else:
+                    self._tick_accum = float(self._tick_accum or 0.0) + delta
+                    sec_add = int(self._tick_accum)
+                    # keep fractional remainder
+                    if sec_add > 0:
+                        self._tick_accum -= float(sec_add)
+                    # cap to avoid large attribution jumps after a short scheduler/debugger stall
+                    if sec_add > 5:
+                        sec_add = 5
+                    # fallback: ensure progress when loop is near 1s but rounding produced 0
+                    if sec_add <= 0 and delta >= 0.9:
+                        sec_add = 1
 
                 now_utc = utcnow()
                 # 默认每拍先关浏览器采集；仅在下方「实际计时」块内才按需置 active=True。
                 # 保证休息/空闲/黑名单/无前台等门控不满足时 watcher 不残留 active。
                 self._browser_watcher.set_active(False)
-                idle = int(get_idle_seconds())
-                # keep previous idle for edge-detection (enter-idle rollback, rest-complete trigger)
+                session_interactive = bool(is_user_session_interactive())
+                self.state.session_interactive = session_interactive
+                if session_interactive:
+                    self._session_inactive_since_mono = 0.0
+                    idle_value = get_idle_seconds_checked()
+                    input_probe_ok = idle_value is not None
+                    if input_probe_ok:
+                        self._idle_probe_failed_since_mono = 0.0
+                        raw_idle = max(0, int(idle_value))
+                    else:
+                        if self._idle_probe_failed_since_mono <= 0.0:
+                            self._idle_probe_failed_since_mono = now_mono
+                        raw_idle = 0
+                else:
+                    if self._session_inactive_since_mono <= 0.0:
+                        self._session_inactive_since_mono = now_mono
+                    input_probe_ok = False
+                    raw_idle = 0
+
+                # keep previous effective idle for auto-idle exit/diagnostics
                 prev_idle = int(self._prev_idle_s)
-                with self._lock:
-                    self._last_idle_s = idle
-                    self._prev_idle_s = idle
 
                 fg_short = ""
                 fg_exe = ""
 
-                idle_th = int(getattr(self.cfg, "idle_threshold_s", 60) or 60)
-                if idle < idle_th:
+                # 自动勿扰应用必须在键鼠 idle 后仍能识别；否则视频/手柄游戏过了 idle
+                # 阈值就会丢失前台应用、退出勿扰并停止计时。
+                if session_interactive:
                     fg = get_foreground()
                     fg_short = str(fg.app_short or "")
                     fg_exe = str(fg.exe_path or "")
@@ -1149,67 +1211,93 @@ class AppController:
                         if fg_short and fg_exe:
                             self._app_paths[fg_short] = fg_exe
 
-                # 退出自动 idle：用户恢复操作，回到原模式（仅当是自动进入的，且已保持最小持续时间）
-                # 防闪烁：只有当 auto_idle 保持了 _auto_idle_min_duration 秒后才允许退出
-                can_exit_auto_idle = (
-                    self.state.auto_idle and
-                    time.time() - self._auto_idle_entered_at >= self._auto_idle_min_duration
-                )
-                # 记录进入 auto_idle 时的 idle 值，用于检测退出边缘
-                if self.state.auto_idle and not hasattr(self, '_auto_idle_entry_idle'):
-                    self._auto_idle_entry_idle = prev_idle if prev_idle >= idle_th else idle
-                # 退出条件：当前不 idle，且进入时的 idle 值 >= idle_th（说明确实是从 idle 恢复的）
-                if self.state.auto_idle and can_exit_auto_idle:
-                    entry_idle = getattr(self, '_auto_idle_entry_idle', -1)
-                    if idle < idle_th and entry_idle >= idle_th:
-                        self.state.auto_idle = False
-                        self._auto_idle_entered_at = 0.0
-                        self._auto_idle_entry_idle = -1
-
                 # 应用与全屏自动勿扰统一裁决，避免两个来源交叠时闪烁。
                 auto_dnd_apps = getattr(self.cfg, "app_auto_dnd_on_focus", None) or {}
                 auto_dnd_app = fg_short if (fg_short and auto_dnd_apps.get(fg_short)) else ""
                 fullscreen_dnd_on = bool(getattr(self.cfg, "fullscreen_dnd", False))
-                raw_fullscreen = is_foreground_fullscreen() if fullscreen_dnd_on else False
+                raw_fullscreen = is_foreground_fullscreen() if (session_interactive and fullscreen_dnd_on) else False
                 # 去抖：连续同向计数，跨过阈值才翻转稳定判定，过滤瞬时抖动。
-                if raw_fullscreen:
-                    self._fs_true_streak += 1
-                    self._fs_false_streak = 0
-                else:
-                    self._fs_false_streak += 1
+                if not session_interactive:
+                    # 会话已经不可见时无需保留全屏去抖，立即退出自动勿扰。
                     self._fs_true_streak = 0
-                if not self._fs_stable and self._fs_true_streak >= FULLSCREEN_ENTER_TICKS:
-                    self._fs_stable = True
-                elif self._fs_stable and self._fs_false_streak >= FULLSCREEN_LEAVE_TICKS:
+                    self._fs_false_streak = 0
                     self._fs_stable = False
+                else:
+                    if raw_fullscreen:
+                        self._fs_true_streak += 1
+                        self._fs_false_streak = 0
+                    else:
+                        self._fs_false_streak += 1
+                        self._fs_true_streak = 0
+                    if not self._fs_stable and self._fs_true_streak >= FULLSCREEN_ENTER_TICKS:
+                        self._fs_stable = True
+                    elif self._fs_stable and self._fs_false_streak >= FULLSCREEN_LEAVE_TICKS:
+                        self._fs_stable = False
                 is_fullscreen = fullscreen_dnd_on and self._fs_stable
                 self._reconcile_auto_dnd(auto_app=auto_dnd_app, auto_fullscreen=bool(is_fullscreen))
 
-                if not self.state.is_paused and not self.state.force_idle and not self.state.auto_idle:
+                dnd_reason = str(getattr(self.state, "dnd_reason", "") or "")
+                auto_dnd_active = bool(self.state.is_dnd and dnd_reason in ("auto_app", "auto_fullscreen"))
+
+                # 有效 idle：自动勿扰媒体视为持续屏幕活动。退出自动勿扰后，用最近一次
+                # 已观测屏幕活动截断 GetLastInputInfo 在整段视频/游戏期间累积的键鼠 idle，
+                # 这样到期提醒会立即弹出，而不会被误判成“已经离开并完成休息”。
+                if not session_interactive:
+                    idle = max(0, int(now_mono - self._session_inactive_since_mono))
+                elif not input_probe_ok:
+                    idle = max(0, int(now_mono - self._idle_probe_failed_since_mono))
+                elif auto_dnd_active:
+                    self._last_screen_activity_mono = now_mono
+                    idle = 0
+                elif raw_idle < idle_th:
+                    # GetLastInputInfo 已给出真实 idle；保存“最后输入时刻”而非当前采样时刻。
+                    # 否则 raw_idle 从 threshold-1 跨到 threshold 时，有效 idle 会从 1 秒
+                    # 重新开始累计，导致自动暂离阈值近似翻倍。
+                    self._last_screen_activity_mono = max(0.0, now_mono - raw_idle)
+                    idle = raw_idle
+                elif self._last_screen_activity_mono > 0.0:
+                    idle = min(raw_idle, max(0, int(now_mono - self._last_screen_activity_mono)))
+                else:
+                    idle = raw_idle
+
+                with self._lock:
+                    self._last_idle_s = idle
+                    self._prev_idle_s = idle
+
+                screen_active = bool(session_interactive and (auto_dnd_active or (input_probe_ok and idle < idle_th)))
+
+                # 退出自动 idle：用户恢复操作，回到原模式（仅当是自动进入的，且已保持最小持续时间）
+                can_exit_auto_idle = (
+                    self.state.auto_idle
+                    and time.monotonic() - self._auto_idle_entered_at >= self._auto_idle_min_duration
+                )
+                if self.state.auto_idle and not hasattr(self, '_auto_idle_entry_idle'):
+                    self._auto_idle_entry_idle = prev_idle if prev_idle >= idle_th else idle
+                if self.state.auto_idle and can_exit_auto_idle and screen_active:
+                    self.state.auto_idle = False
+                    self._auto_idle_entered_at = 0.0
+                    self._auto_idle_entry_idle = -1
+
+                # 电平触发进入自动暂离，覆盖“在自动勿扰中跨过 idle 阈值、随后退出勿扰”
+                # 这种不会再产生传统阈值边沿的情况。会话断开则立即显示暂离，但按真实断开
+                # 持续时间决定何时完成休息。
+                should_auto_idle = (not session_interactive) or (not input_probe_ok) or idle >= idle_th
+                if should_auto_idle and not self.state.auto_idle and not self._is_resting:
+                    if not self.state.is_dnd and not self.state.force_idle:
+                        self.state.auto_idle = True
+                        self._auto_idle_entered_at = time.monotonic()
+                        self._auto_idle_entry_idle = max(idle, idle_th)
+
+                if session_interactive and not self.state.is_paused and not self.state.force_idle and not self.state.auto_idle:
 
                     # continuous work / rest reminder state machine
-                    rest_s = int(getattr(self.cfg, "reminder_rest_seconds", 20) or 20)
-
-                    # 1) 进入 idle 状态时：设置 auto_idle 标志（但不立即重置连续用眼时间）
-                    # 重置连续用眼时间应该在 idle >= rest_s 时通过 rest_complete() 执行
-                    if idle >= idle_th and prev_idle < idle_th:
-                        # [FIX] 禁止 rest 期间进入 auto-idle，避免状态混乱
-                        if self._is_resting:
-                            pass  # skip auto_idle entry during rest
-                        elif not self.state.is_dnd:
-                            self.state.auto_idle = True  # 同步托盘/模式为 idle，恢复操作后在上方清除
-                            self._auto_idle_entered_at = time.time()  # 记录进入时间，防闪烁
-                            self._auto_idle_entry_idle = idle  # 记录进入时的 idle 值
-                        # [FIX] 不再在进入 idle 时立即重置连续用眼时间
-                        # 重置应该在 idle >= rest_s 时通过 rest_complete() 执行（见下方第913行）
-
-                    if idle < idle_th:
+                    if screen_active:
                         # 休息遮罩期间：冻结连续用眼/不记录 usage，避免“休息中还在计时、甚至再次触发提醒”。
                         with self._lock:
                             is_resting = bool(self._is_resting)
 
                         if self.is_debug_notify():
-                            now_ts = time.time()
+                            now_ts = time.monotonic()
                             if now_ts - float(self._debug_last_tick_log_ts or 0.0) >= 5.0:
                                 self._debug_last_tick_log_ts = now_ts
                                 log.info(
@@ -1255,18 +1343,10 @@ class AppController:
                         elif self.is_debug_notify() and (not fg_short):
                             log.info("debug: tick skip usage (no fg app)")
 
-                # 2) 自动完成休息：用户离开足够久 = 已休息，重置连续用眼。
-                # 注意：放在 if not auto_idle: 块之外，确保 idle 状态下也能触发。
-                # 但 paused/force_idle/dnd 下不跨越用户显式模式，禁止自动 complete。
-                #
-                # [FIX] 判定"已休息"的 idle 阈值改用 idle_threshold_s（用户设的"无操作暂停"时间），
-                # 不再用 reminder_rest_seconds（休息时长，默认仅 20s）。旧逻辑把 20s 短暂离开就当成
-                # 休息、把连续用眼清零——即使用户把 idle 阈值调到 999s 也照清不误（用户主诉）。
-                # 仍保证不小于一次休息时长，避免 idle 阈值被设得过小（如 3s）时一停就清零。
-                rest_s = int(getattr(self.cfg, "reminder_rest_seconds", 20) or 20)
-                rested_idle_th = max(int(idle_th), rest_s)
-                # 用户恢复操作（idle 落回阈值以下）→ 清除"本次离开已结算"闩锁，允许下次离开再结算。
-                if idle < idle_th:
+                # 2) 自动完成休息：只有“有效屏幕活动”确实停止够久才结算。自动勿扰期间
+                # 即便键鼠 idle 很大也仍在看视频/玩游戏，不能把这段时间当成休息。
+                rested_idle_th = max(int(idle_th), rest_s_cfg)
+                if screen_active:
                     self._rested_settled = False
                 # 诊断（吃 --debug / EYECARE_DEBUG）：把离开期间的真实 idle 读数与各 flag 打出来，
                 # 便于定位"明明离开 >60s 却没自动结算"——若离开期间这行始终不出现，说明 idle 没涨上去
@@ -1275,7 +1355,7 @@ class AppController:
                 if idle >= 3:
                     try:
                         from ..diagnostics.debug_switch import is_debug_enabled
-                        _now_diag = time.time()
+                        _now_diag = time.monotonic()
                         if is_debug_enabled() and (_now_diag - float(self._auto_settle_diag_ts) >= 5.0):
                             self._auto_settle_diag_ts = _now_diag
                             log.info(
@@ -1286,18 +1366,15 @@ class AppController:
                             )
                     except Exception:
                         pass
-                # [FIX] 电平触发 + 一次性闩锁（原为边沿触发 prev_idle<th and idle>=th）。
-                # 旧的边沿触发有漏洞：若 idle 跨过阈值的那一拍正处于勿扰（如全屏自动勿扰），
-                # 这一拍被 not is_dnd 挡掉、边沿被消费；之后 prev_idle 已 >= th，永不再"跨过"，
-                # 等勿扰解除时也无法补结算。改电平触发后：只要离开够久、当前不在
-                # paused/force_idle/dnd、且本次离开尚未结算过，就结算——故勿扰解除后只要
-                # 人还没回来（idle 仍 >= th），下一拍即可补结算。
-                if rested_idle_th > 0 and idle >= rested_idle_th and not self._rested_settled:
-                    if (not self.state.is_paused) and (not self.state.force_idle) and (not self.state.is_dnd):
+                if rested_idle_th > 0 and (not screen_active) and idle >= rested_idle_th and not self._rested_settled:
+                    # 显式勿扰仍不跨模式自动结算；但锁屏/远程断开是比模式更强的无人使用
+                    # 证据，必须结算，否则重连后会继承断开前的到期提醒。
+                    can_settle = (not self.state.is_dnd) or (not session_interactive)
+                    if (not self.state.is_paused) and (not self.state.force_idle) and can_settle:
                         self.rest_complete()
                         self._rested_settled = True
 
-                now = time.time()
+                now = time.monotonic()
 
                 if now - self._last_flush >= FLUSH_INTERVAL_S:
                     self.repo.flush()
@@ -1321,5 +1398,5 @@ class AppController:
             except Exception:
                 log.exception("tick error")
 
-            dt = time.time() - t0
+            dt = time.monotonic() - t0
             time.sleep(max(0.0, interval - dt))

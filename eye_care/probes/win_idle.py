@@ -29,12 +29,12 @@ GetTickCount64.argtypes = []
 GetTickCount64.restype = ctypes.c_ulonglong
 
 
-def get_idle_seconds_win() -> int:
+def get_idle_seconds_win_checked() -> int | None:
     try:
         lii = LASTINPUTINFO()
         lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
         if not GetLastInputInfo(ctypes.byref(lii)):
-            return 0
+            return None
         now_ms = int(GetTickCount64())
         # lii.dwTime is a DWORD (wraps), but GetTickCount64 won't wrap in practice.
         last_ms = int(lii.dwTime)
@@ -45,4 +45,12 @@ def get_idle_seconds_win() -> int:
         delta = (now_low - last_ms) & 0xFFFFFFFF
         return int(delta // 1000)
     except Exception:
+        return None
+
+
+def get_idle_seconds_win() -> int:
+    """兼容旧调用；需要区分探针失败时请使用 ``get_idle_seconds_win_checked``。"""
+    value = get_idle_seconds_win_checked()
+    if value is None:
         return 0
+    return int(value)

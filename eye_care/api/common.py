@@ -5,10 +5,6 @@ from datetime import datetime, timedelta, timezone
 
 API_VERSION = 1
 
-# M5 检查更新：10 分钟内存缓存
-_update_check_cache: dict = {}
-_UPDATE_CACHE_TTL = 600
-
 
 def _iso_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

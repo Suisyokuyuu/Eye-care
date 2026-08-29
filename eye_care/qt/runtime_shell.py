@@ -984,6 +984,10 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
 
         qml_path = PROJECT_ROOT / "eye_care" / "qt_quick" / "qml" / "AppShell.qml"
         bridges = build_shell_bridges(controller, persist=True, log=log, today=_date.today().isoformat())
+        try:
+            bridges["updateBridge"].restartRequested.connect(_quit_from_tray)
+        except Exception:
+            log.exception("qt.qml_shell update restart binding failed")
 
         host_bridge = QtHostBridge()
         qt_bridge_ref["value"] = host_bridge
@@ -1158,6 +1162,34 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     tray_ref["value"] = tray
     tray_started = tray.start()
     log.info("qt.tray.start_result ok=%s", tray_started)
+
+    # 自动升级：启动后静默检查，此后每 6 小时检查一次。新版下载并校验完成后只提示，
+    # 用户确认“立即重启升级”才退出当前进程，独立 updater 随后替换并重启。
+    update_bridge = (_qml_refs.get("bridges") or {}).get("updateBridge")
+    if update_bridge is not None:
+        def _on_update_ready(version: str) -> None:
+            try:
+                tray.actions["check_update"].setText("安装已下载更新")
+                tray.tray.showMessage(
+                    "EyE Care 更新已准备好",
+                    "v%s 已下载并校验完成，点击这里重启升级。" % version,
+                )
+            except Exception:
+                log.exception("qt auto update ready notification failed")
+
+        try:
+            update_bridge.updateReady.connect(_on_update_ready)
+            tray.tray.messageClicked.connect(_check_update_from_tray)
+            if bool(getattr(update_bridge, "readyToInstall", False)):
+                QTimer.singleShot(1500, lambda: _on_update_ready(update_bridge.latestVersion))
+            QTimer.singleShot(5000, update_bridge.startAutomatic)
+            update_poll = QTimer()
+            update_poll.setInterval(6 * 60 * 60 * 1000)
+            update_poll.timeout.connect(update_bridge.startAutomatic)
+            update_poll.start()
+            _qml_refs["update_poll"] = update_poll
+        except Exception:
+            log.exception("qt auto update scheduling failed")
 
     # Controller 的自动模式在后台线程变化；用 GUI 线程轻量轮询同步托盘，避免跨线程操作 Qt 对象。
     mode_poll = QTimer()

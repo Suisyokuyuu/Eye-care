@@ -3,9 +3,6 @@
 import base64
 import hashlib
 import json
-import time
-import urllib.error
-import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -326,102 +323,19 @@ class ConfigService:
         return {"ok": True, "api_version": API_VERSION}
 
     def check_update(self) -> dict:
-        from eye_care.api.common import _UPDATE_CACHE_TTL, _parse_semver, _update_check_cache
-        now = time.time()
-        if _update_check_cache and (now - _update_check_cache.get("_ts", 0)) < _UPDATE_CACHE_TTL:
-            cached = _update_check_cache
-            return {
-                "ok": True,
-                "current": cached.get("current", ""),
-                "latest": cached.get("latest", ""),
-                "has_update": cached.get("has_update", False),
-                "html_url": cached.get("html_url", ""),
-                "asset_url": cached.get("asset_url", ""),
-                "error": "",
-            }
-        try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/Suisyokuyuu/Eye-care/releases/latest",
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "User-Agent": "Eye-care",
-                },
+        """Compatibility API for callers that only need release information."""
+        from eye_care.bootstrap.constants import PROJECT_ROOT
+        from eye_care.update_service import UpdateService
+
+        service = getattr(self, "_update_service", None)
+        if service is None:
+            service = UpdateService(
+                data_dir=Path(self.ctx.controller.data_dir),
+                install_dir=PROJECT_ROOT,
+                logger=self.ctx.log,
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode())
-            tag = (data.get("tag_name") or "").strip().lstrip("v")
-            html_url = (data.get("html_url") or "").strip()
-            assets = data.get("assets") or []
-            asset_url = ""
-            if assets and isinstance(assets[0], dict):
-                asset_url = (assets[0].get("browser_download_url") or "").strip()
-            from eye_care.version import APP_VERSION
-            latest_ver = _parse_semver(tag or "0.0.0")
-            current_ver = _parse_semver(APP_VERSION)
-            has_update = latest_ver > current_ver
-            _update_check_cache.update({
-                "_ts": now,
-                "current": APP_VERSION,
-                "latest": tag or "0.0.0",
-                "has_update": has_update,
-                "html_url": html_url,
-                "asset_url": asset_url,
-            })
-            return {
-                "ok": True,
-                "current": APP_VERSION,
-                "latest": tag or "0.0.0",
-                "has_update": has_update,
-                "html_url": html_url,
-                "asset_url": asset_url,
-                "error": "",
-            }
-        except urllib.error.HTTPError as exc:
-            from eye_care.version import APP_VERSION
-            if exc.code == 404:
-                release_page = "https://github.com/Suisyokuyuu/Eye-care/releases"
-                _update_check_cache.update({
-                    "_ts": now,
-                    "current": APP_VERSION,
-                    "latest": "",
-                    "has_update": False,
-                    "html_url": release_page,
-                    "asset_url": "",
-                })
-                return {
-                    "ok": True,
-                    "current": APP_VERSION,
-                    "latest": "",
-                    "has_update": False,
-                    "html_url": release_page,
-                    "asset_url": "",
-                    "error": "",
-                }
-            err = str(exc)
-            if exc.code == 403:
-                err = "请求过于频繁，请稍后再试"
-            _update_check_cache["_ts"] = 0
-            return {
-                "ok": False,
-                "current": APP_VERSION,
-                "latest": "",
-                "has_update": False,
-                "html_url": "",
-                "asset_url": "",
-                "error": err,
-            }
-        except Exception as exc:
-            self.ctx.log.exception("config_service.check_update failed")
-            from eye_care.version import APP_VERSION
-            return {
-                "ok": False,
-                "current": APP_VERSION,
-                "latest": "",
-                "has_update": False,
-                "html_url": "",
-                "asset_url": "",
-                "error": str(exc)[:200],
-            }
+            self._update_service = service
+        return service.check_update()
 
     def open_url_action(self, *, action: str) -> dict:
         action = str(action or "").strip()
