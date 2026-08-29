@@ -44,8 +44,8 @@ python main.py --no-single      # 允许多实例（开发时用）
 
 | 选项 | 说明 |
 |------|------|
-| `[1] 修改版本号` | 写 `eye_care/version.py`，并自动重新生成 `version_info.txt` |
-| `[2] 打包 exe` | 可顺便改版本号；产出 `dist/EyE Care/`、版本化 ZIP 和 SHA-256 |
+| `[1] 一键打包发布新版` | 可输入新版本号，回车沿用当前版本；生成程序、版本化 ZIP 和 SHA-256 |
+| `[2] 仅修改版本号` | 写 `eye_care/version.py`，并自动重新生成 `version_info.txt` |
 | `[3] 清理构建产物` | 删除 `dist/`、`build/`、所有 `__pycache__` |
 
 版本号的唯一真源是 `eye_care/version.py`；`version_info.txt`（exe 属性里显示的版本）
@@ -58,20 +58,17 @@ python scripts/sync_version.py         # 只按现有版本重新生成
 
 ### 发布新版（无需创建版本 Tag）
 
-仓库使用 `updates/latest.json` 作为唯一更新清单，GitHub Release 只保留一个永久的
-`latest` Tag。客户端不读取 Tag 判断版本。
+GitHub 只保留一个永久的 `latest` Tag/Release，不运行发布 Workflow。客户端查询
+GitHub Release API，从版本化 ZIP 的文件名读取线上版本，并要求同名 `.sha256` 存在。
 
-1. 将代码提交并推送到 `main`。
-2. 打开 GitHub 仓库的 **Actions → Publish rolling Windows release → Run workflow**。
-3. 选择 `patch`、`minor`、`major`，也可以输入指定版本和更新说明。
+1. 修改代码后运行 `menu.bat`，选择 `[1] 一键打包发布新版`；已改版本号时直接回车即可。
+2. 打包完成后，`dist/` 中会生成版本化 ZIP 和同名 `.sha256`。
+3. 第一次发布时创建 Tag 为 `latest` 的 Release；以后始终编辑这一个 Release。
+4. 先上传新版 `.sha256`，再上传 ZIP。两者尚未成对时客户端不会升级。
+5. 确认新版两个文件都存在后，删除旧版本文件。
 
-流水线会自动运行测试、修改版本号、构建程序与独立升级器、生成版本化 ZIP 和
-SHA-256、上传到固定 `latest` Release，最后才提交 `updates/latest.json`。不要手动编辑
-该清单，也不需要为每个版本创建 Tag。
-
-首次运行前，请在仓库 **Settings → Actions → General → Workflow permissions** 中允许
-GitHub Actions 读写仓库内容。工作流第一次发布时会创建唯一的 `latest` Tag/Release，
-以后只更新其中的资产。
+不需要 `latest.json`，不需要创建 `v1.3.4` 一类的版本 Tag，也不需要在 GitHub 上运行
+测试或打包。
 
 ---
 

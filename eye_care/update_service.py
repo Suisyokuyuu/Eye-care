@@ -1,4 +1,4 @@
-"""Manifest-driven download/staging for the desktop auto updater."""
+"""GitHub Release driven download/staging for the desktop auto updater."""
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +21,7 @@ from eye_care.api.common import _parse_semver
 from eye_care.version import APP_VERSION
 
 
-UPDATE_FEED_URL = "https://raw.githubusercontent.com/Suisyokuyuu/Eye-care/main/updates/latest.json"
+LATEST_RELEASE_API_URL = "https://api.github.com/repos/Suisyokuyuu/Eye-care/releases/tags/latest"
 RELEASES_URL = "https://github.com/Suisyokuyuu/Eye-care/releases/tag/latest"
 MAIN_EXE_NAME = "EyE Care.exe"
 UPDATER_EXE_NAME = "EyE Care Updater.exe"
@@ -31,6 +31,8 @@ MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_FILES = 20_000
 _CACHE_TTL_S = 6 * 60 * 60
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\.\d+)?$")
+_PACKAGE_RE = re.compile(r"^EyE-Care-(\d+\.\d+\.\d+)-Windows-x64\.zip$", re.IGNORECASE)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class UpdateError(RuntimeError):
@@ -69,41 +71,83 @@ def _github_download_url(value: object) -> str:
     return url
 
 
-def _parse_update_feed(data: object, current_version: str) -> dict:
-    if not isinstance(data, dict) or data.get("schema") != 1 or data.get("product") != "EyE Care":
-        raise UpdateError("更新清单格式无效")
-    if str(data.get("channel") or "stable") != "stable":
-        raise UpdateError("更新清单不是稳定通道")
-    latest = _safe_version(data.get("version"))
-    package = data.get("package")
-    if not isinstance(package, dict):
-        raise UpdateError("更新清单缺少 Windows 安装包")
+def _empty_release_result(current_version: str, data: object = None) -> dict:
+    release = data if isinstance(data, dict) else {}
+    return {
+        "ok": True,
+        "current": current_version,
+        "latest": "",
+        "has_update": False,
+        "html_url": str(release.get("html_url") or RELEASES_URL),
+        "release_notes": str(release.get("body") or "")[:8000],
+        "downloadable": False,
+        "error": "",
+    }
+
+
+def _parse_latest_release(data: object, current_version: str) -> dict:
+    """Select the newest complete ZIP + SHA256 pair from the fixed latest Release."""
+    if not isinstance(data, dict) or str(data.get("tag_name") or "") != "latest":
+        raise UpdateError("GitHub latest Release 格式无效")
+    if bool(data.get("draft")):
+        return _empty_release_result(current_version, data)
+    assets = data.get("assets")
+    if not isinstance(assets, list):
+        raise UpdateError("GitHub latest Release 缺少资源列表")
+
+    by_name: dict[str, dict] = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or str(asset.get("state") or "uploaded") != "uploaded":
+            continue
+        name = Path(str(asset.get("name") or "")).name
+        if name:
+            by_name[name.casefold()] = asset
+
+    candidates: list[tuple[tuple[int, int, int], str, dict, dict]] = []
+    for asset in by_name.values():
+        name = Path(str(asset.get("name") or "")).name
+        match = _PACKAGE_RE.fullmatch(name)
+        if not match:
+            continue
+        checksum = by_name.get((name + ".sha256").casefold())
+        if checksum is None:
+            continue
+        version = _safe_version(match.group(1))
+        candidates.append((_parse_semver(version), version, asset, checksum))
+
+    if not candidates:
+        return _empty_release_result(current_version, data)
+
+    _parts, latest, package, checksum = max(candidates, key=lambda item: item[0])
     asset_name = Path(str(package.get("name") or "")).name
-    if not asset_name.lower().endswith(".zip") or "windows-x64" not in asset_name.lower():
-        raise UpdateError("更新清单中的安装包名称无效")
-    asset_url = _github_download_url(package.get("url"))
-    digest = str(package.get("sha256") or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise UpdateError("更新清单缺少有效的 SHA-256")
+    asset_url = _github_download_url(package.get("browser_download_url"))
+    checksum_url = _github_download_url(checksum.get("browser_download_url"))
     try:
         asset_size = int(package.get("size") or 0)
     except (TypeError, ValueError) as exc:
-        raise UpdateError("更新清单中的安装包大小无效") from exc
+        raise UpdateError("GitHub 安装包大小无效") from exc
     if asset_size <= 0 or asset_size > MAX_PACKAGE_BYTES:
-        raise UpdateError("更新清单中的安装包大小异常")
+        raise UpdateError("GitHub 安装包大小异常")
+
+    digest = str(package.get("digest") or "").strip().lower()
+    if digest.startswith("sha256:"):
+        digest = digest.removeprefix("sha256:")
+    if not _SHA256_RE.fullmatch(digest):
+        digest = ""
     has_update = _parse_semver(latest) > _parse_semver(current_version)
     return {
         "ok": True,
         "current": current_version,
         "latest": latest,
         "has_update": has_update,
-        "html_url": str(data.get("release_url") or RELEASES_URL),
-        "release_notes": str(data.get("notes") or "")[:8000],
+        "html_url": str(data.get("html_url") or RELEASES_URL),
+        "release_notes": str(data.get("body") or "")[:8000],
         "asset_name": asset_name,
         "asset_url": asset_url,
         "asset_size": asset_size,
         "asset_sha256": digest,
-        "downloadable": has_update,
+        "checksum_url": checksum_url,
+        "downloadable": bool(has_update and digest),
         "published_at": str(data.get("published_at") or ""),
         "error": "",
     }
@@ -207,21 +251,49 @@ class UpdateService:
         request = urllib.request.Request(
             url,
             headers={
-                "Accept": "application/json",
+                "Accept": "application/vnd.github+json",
                 "User-Agent": f"EyE-Care/{APP_VERSION}",
                 "Cache-Control": "no-cache",
+                "X-GitHub-Api-Version": "2022-11-28",
             },
         )
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _request_checksum(url: str, asset_name: str, timeout_s: float) -> str:
+        _github_download_url(url)
+        request = urllib.request.Request(
+            url,
+            headers={"Accept": "text/plain", "User-Agent": f"EyE-Care/{APP_VERSION}"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = response.read(4097)
+        if len(payload) > 4096:
+            raise UpdateError("SHA-256 校验文件过大")
+        try:
+            text = payload.decode("ascii", errors="strict").strip()
+        except UnicodeError as exc:
+            raise UpdateError("SHA-256 校验文件编码无效") from exc
+        match = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?(.+)", text)
+        if not match or Path(match.group(2).strip()).name.casefold() != asset_name.casefold():
+            raise UpdateError("SHA-256 校验文件内容无效")
+        return match.group(1).lower()
 
     def check_update(self, *, force: bool = False) -> dict:
         now = time.monotonic()
         if not force and self._cache is not None and now - self._cache_mono < _CACHE_TTL_S:
             return dict(self._cache)
         try:
-            data = self._request_json(UPDATE_FEED_URL, self.timeout_s)
-            result = _parse_update_feed(data, self.current_version)
+            data = self._request_json(LATEST_RELEASE_API_URL, self.timeout_s)
+            result = _parse_latest_release(data, self.current_version)
+            if result.get("has_update") and not result.get("asset_sha256"):
+                result["asset_sha256"] = self._request_checksum(
+                    str(result.get("checksum_url") or ""),
+                    str(result.get("asset_name") or ""),
+                    self.timeout_s,
+                )
+            result["downloadable"] = bool(result.get("has_update") and result.get("asset_sha256"))
             self._cache = dict(result)
             self._cache_mono = now
             return result
@@ -231,7 +303,7 @@ class UpdateService:
                     "ok": True, "current": self.current_version, "latest": "", "has_update": False,
                     "html_url": RELEASES_URL, "downloadable": False, "error": "",
                 }, now)
-            message = "GitHub 请求过于频繁，请稍后再试" if exc.code == 403 else f"读取更新清单失败（HTTP {exc.code}）"
+            message = "GitHub 请求过于频繁，请稍后再试" if exc.code == 403 else f"读取 latest Release 失败（HTTP {exc.code}）"
             return {"ok": False, "current": self.current_version, "has_update": False, "error": message}
         except (OSError, ValueError, UpdateError, json.JSONDecodeError) as exc:
             if self.log:

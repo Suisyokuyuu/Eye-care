@@ -10,12 +10,13 @@ from unittest import mock
 
 from eye_care.update_helper import ApplyError, apply_update
 from eye_care.update_service import (
+    LATEST_RELEASE_API_URL,
     MAIN_EXE_NAME,
     MANIFEST_NAME,
     UPDATER_EXE_NAME,
     UpdateError,
     UpdateService,
-    _parse_update_feed,
+    _parse_latest_release,
     validate_staged_package,
 )
 
@@ -32,40 +33,76 @@ def _write_manifest(root: Path, version: str, rel_paths: list[str]) -> None:
 
 
 class UpdateFeedTests(unittest.TestCase):
-    def _feed(self) -> dict:
+    def test_update_check_uses_the_fixed_latest_release_api(self) -> None:
+        self.assertEqual(
+            LATEST_RELEASE_API_URL,
+            "https://api.github.com/repos/Suisyokuyuu/Eye-care/releases/tags/latest",
+        )
+
+    @staticmethod
+    def _asset(name: str, *, size: int = 1234, digest: str = "") -> dict:
         return {
-            "schema": 1,
-            "product": "EyE Care",
-            "channel": "stable",
-            "version": "2.0.0",
-            "release_url": "https://github.com/Suisyokuyuu/Eye-care/releases/tag/latest",
-            "notes": "test release",
-            "package": {
-                "name": "EyE-Care-2.0.0-Windows-x64.zip",
-                "url": "https://github.com/Suisyokuyuu/Eye-care/releases/download/latest/EyE-Care-2.0.0-Windows-x64.zip",
-                "size": 1234,
-                "sha256": "a" * 64,
-            },
+            "name": name,
+            "state": "uploaded",
+            "size": size,
+            "digest": digest,
+            "browser_download_url": f"https://github.com/Suisyokuyuu/Eye-care/releases/download/latest/{name}",
         }
 
-    def test_manifest_version_drives_update_without_version_tag(self) -> None:
-        parsed = _parse_update_feed(self._feed(), "1.3.2")
+    def _release(self) -> dict:
+        package = "EyE-Care-2.0.0-Windows-x64.zip"
+        return {
+            "tag_name": "latest",
+            "draft": False,
+            "html_url": "https://github.com/Suisyokuyuu/Eye-care/releases/tag/latest",
+            "body": "test release",
+            "published_at": "2026-08-29T00:00:00Z",
+            "assets": [self._asset(package), self._asset(package + ".sha256", size=80)],
+        }
+
+    def test_package_filename_drives_update_without_version_tag(self) -> None:
+        parsed = _parse_latest_release(self._release(), "1.3.2")
         self.assertTrue(parsed["has_update"])
-        self.assertTrue(parsed["downloadable"])
         self.assertEqual(parsed["latest"], "2.0.0")
         self.assertIn("/download/latest/", parsed["asset_url"])
+        self.assertTrue(parsed["checksum_url"].endswith(".zip.sha256"))
 
     def test_rejects_asset_that_uses_a_version_tag(self) -> None:
-        feed = self._feed()
-        feed["package"]["url"] = feed["package"]["url"].replace("/latest/", "/v2.0.0/")
+        release = self._release()
+        release["assets"][0]["browser_download_url"] = release["assets"][0][
+            "browser_download_url"
+        ].replace("/latest/", "/v2.0.0/")
         with self.assertRaises(UpdateError):
-            _parse_update_feed(feed, "1.3.2")
+            _parse_latest_release(release, "1.3.2")
 
-    def test_rejects_single_exe_instead_of_complete_directory_zip(self) -> None:
-        feed = self._feed()
-        feed["package"]["name"] = "EyE Care.exe"
-        with self.assertRaises(UpdateError):
-            _parse_update_feed(feed, "1.3.2")
+    def test_incomplete_new_package_is_ignored(self) -> None:
+        release = self._release()
+        release["assets"] = [release["assets"][0]]
+        parsed = _parse_latest_release(release, "1.3.2")
+        self.assertFalse(parsed["has_update"])
+
+    def test_incomplete_new_package_does_not_hide_an_older_complete_pair(self) -> None:
+        release = self._release()
+        newest_zip = release["assets"][0]
+        old_name = "EyE-Care-1.5.0-Windows-x64.zip"
+        release["assets"] = [
+            self._asset(old_name),
+            self._asset(old_name + ".sha256", size=80),
+            newest_zip,
+        ]
+        parsed = _parse_latest_release(release, "1.3.2")
+        self.assertEqual(parsed["latest"], "1.5.0")
+
+    def test_check_update_reads_the_matching_checksum_sidecar(self) -> None:
+        service = UpdateService(data_dir=Path("data"), install_dir=Path("app"), current_version="1.3.2")
+        with (
+            mock.patch.object(service, "_request_json", return_value=self._release()),
+            mock.patch.object(service, "_request_checksum", return_value="a" * 64) as checksum,
+        ):
+            result = service.check_update(force=True)
+        self.assertTrue(result["downloadable"])
+        self.assertEqual(result["asset_sha256"], "a" * 64)
+        checksum.assert_called_once()
 
 
 class StagedPackageTests(unittest.TestCase):
@@ -189,7 +226,10 @@ class ApplyUpdateTests(unittest.TestCase):
         failed = {"once": False}
 
         def fail_once(source: Path, target: Path) -> None:
-            if target == self.target / MAIN_EXE_NAME and not failed["once"]:
+            # apply_update() resolves its directories first.  On Windows runners a
+            # temporary path may therefore change case or expand from an 8.3 form,
+            # so comparing it with the unresolved fixture path is not reliable.
+            if target.name.casefold() == MAIN_EXE_NAME.casefold() and not failed["once"]:
                 failed["once"] = True
                 raise OSError("simulated locked file")
             original_copy(source, target)
@@ -197,6 +237,7 @@ class ApplyUpdateTests(unittest.TestCase):
         with mock.patch.object(update_helper, "_atomic_copy", side_effect=fail_once):
             with self.assertRaises(ApplyError):
                 apply_update(self.source, self.target, self.data, "1.0.0", "2.0.0")
+        self.assertTrue(failed["once"], "the simulated copy failure was not injected")
         self.assertEqual((self.target / MAIN_EXE_NAME).read_bytes(), b"old-main")
         self.assertEqual((self.target / UPDATER_EXE_NAME).read_bytes(), b"old-updater")
         self.assertTrue((self.target / "_internal" / "old.dll").is_file())

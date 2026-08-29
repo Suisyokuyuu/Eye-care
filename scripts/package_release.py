@@ -7,7 +7,6 @@ import json
 import os
 import sys
 import zipfile
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 
@@ -88,58 +87,19 @@ def create_archive(package_dir: Path, output_dir: Path, version: str = APP_VERSI
     return archive, checksum
 
 
-def write_update_feed(
-    archive: Path,
-    feed_path: Path,
-    *,
-    version: str,
-    notes: str = "",
-) -> Path:
-    archive = Path(archive).resolve()
-    feed_path = Path(feed_path).resolve()
-    if archive.name != package_name(version) or not archive.is_file():
-        raise RuntimeError("Release archive is missing or has an unexpected name")
-    payload = {
-        "schema": 1,
-        "product": "EyE Care",
-        "channel": "stable",
-        "version": version,
-        "published_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "release_url": "https://github.com/Suisyokuyuu/Eye-care/releases/tag/latest",
-        "notes": str(notes or "").strip(),
-        "package": {
-            "name": archive.name,
-            "url": f"https://github.com/Suisyokuyuu/Eye-care/releases/download/latest/{archive.name}",
-            "size": archive.stat().st_size,
-            "sha256": _sha256(archive),
-        },
-    }
-    feed_path.parent.mkdir(parents=True, exist_ok=True)
-    temp = feed_path.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp, feed_path)
-    return feed_path
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare an EyE Care auto-update release package")
     parser.add_argument("package_dir", nargs="?", default=str(PROJECT_ROOT / "dist" / "EyE Care"))
     parser.add_argument("--version", default=APP_VERSION)
     parser.add_argument("--archive", action="store_true")
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "dist"))
-    parser.add_argument("--feed-output", default="")
-    parser.add_argument("--notes", default="")
     args = parser.parse_args(argv)
     if args.archive:
-        archive, checksum = create_archive(Path(args.package_dir), Path(args.output_dir), args.version)
+        output_dir = Path(args.output_dir)
+        archive, checksum = create_archive(Path(args.package_dir), output_dir, args.version)
         print(f"Prepared {Path(args.package_dir).resolve() / MANIFEST_NAME}")
         print(f"Created {archive}")
         print(f"Created {checksum}")
-        if args.feed_output:
-            feed = write_update_feed(archive, Path(args.feed_output), version=args.version, notes=args.notes)
-            print(f"Created {feed}")
-    elif args.feed_output:
-        raise RuntimeError("--feed-output requires --archive")
     else:
         manifest = write_manifest(Path(args.package_dir), args.version)
         print(f"Prepared {manifest}")

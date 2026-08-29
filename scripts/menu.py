@@ -19,10 +19,9 @@ cmd.exe 解析含多字节字符的 .bat 是不可靠的：它按字节块读文
 PowerShell；这里改用 Python——打包本来就要 Python，且逻辑可以写单测。）
 
 菜单项：
-  [1] 修改版本号     调 sync_version.py，同时写 version.py 与 version_info.txt
-  [2] 打包 exe       可顺便改版本号，然后转发给 scripts/build_exe.bat
+  [1] 打包发布新版   可输入新版本号，回车沿用当前版本
+  [2] 仅修改版本号   调 sync_version.py，同时写 version.py 与 version_info.txt
   [3] 清理构建产物   删 dist/ build/，再转发给 scripts/clear_pycache.bat
-  [4] 发布自动更新   调 publish_release.py，启动 GitHub Actions
 """
 from __future__ import annotations
 
@@ -37,7 +36,6 @@ import sync_version as sv  # noqa: E402  （同目录脚本，插完 path 才能
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILD_BAT = PROJECT_ROOT / "scripts" / "build_exe.bat"
 CLEAN_BAT = PROJECT_ROOT / "scripts" / "clear_pycache.bat"
-PUBLISH_SCRIPT = PROJECT_ROOT / "scripts" / "publish_release.py"
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
 
@@ -133,7 +131,7 @@ def _sync(new_version: str | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 1) 修改版本号
+# 2) 仅修改版本号
 # ---------------------------------------------------------------------------
 
 def action_set_version() -> None:
@@ -156,23 +154,23 @@ def action_set_version() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2) 打包 exe
+# 1) 打包发布新版
 # ---------------------------------------------------------------------------
 
 def action_build() -> None:
-    _header("打包 exe")
-    print(f"  当前版本：{_current_version()}")
+    _header("打包发布新版")
+    current = _current_version()
+    print(f"  当前版本：{current}")
     print()
 
-    new_version = _ask("要顺便改版本号吗？输入新版本号，直接回车沿用当前版本: ")
+    new_version = _ask(f"发布版本号（直接回车沿用 {current}）: ") or current
     print()
-    if new_version:
-        if not _sync(new_version):
-            print()
-            _err("版本号同步失败，已终止打包。")
-            _pause()
-            return
+    if not new_version or not _sync(new_version):
         print()
+        _err("版本号同步失败，已终止打包。")
+        _pause()
+        return
+    print()
 
     # 打包实现只有 build_exe.bat 一份，这里只做转发，避免两处逻辑各自漂移。
     # 它内部会再同步一次版本号，所以直接运行它也不会出现版本对不上。
@@ -185,6 +183,10 @@ def action_build() -> None:
         print(f"    产物：{DIST_DIR / 'EyE Care'}")
         print(f"    发布包：{DIST_DIR / f'EyE-Care-{_current_version()}-Windows-x64.zip'}")
         print("    校验值：同名 .zip.sha256 文件")
+        print()
+        print("    发布只需两步：")
+        print("    1. 在固定 latest Release 中先上传 .zip.sha256，再上传 ZIP。")
+        print("    2. 确认新版可见后，删除 Release 中的旧版本文件。")
         print('    可以右键 "EyE Care.exe" → 属性 → 详细信息，核对版本号。')
     else:
         _err(f"打包失败（退出码 {rc}），请看上面的报错。")
@@ -222,37 +224,13 @@ def action_clean() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4) 发布自动更新
-# ---------------------------------------------------------------------------
-
-def action_publish() -> None:
-    _header("发布自动更新")
-    print("  将启动 GitHub Actions，在固定 latest Release 中发布新版本。")
-    print("  不需要、也不会创建按版本命名的 Tag。")
-    print()
-    if not PUBLISH_SCRIPT.exists():
-        _err(f"缺少文件：{PUBLISH_SCRIPT}")
-        _pause()
-        return
-    try:
-        rc = subprocess.call([sys.executable, str(PUBLISH_SCRIPT)], cwd=str(PROJECT_ROOT))
-    except OSError as exc:
-        _err(f"无法运行发布脚本：{exc}")
-        _pause()
-        return
-    if rc != 0:
-        _err(f"发布启动器执行失败（退出码 {rc}）。")
-
-
-# ---------------------------------------------------------------------------
 # 主菜单
 # ---------------------------------------------------------------------------
 
 MENU_ITEMS = (
-    ("1", "修改版本号      同时写 version.py 与 version_info.txt", action_set_version),
-    ("2", "打包 exe        可顺便改版本号，打包前自动同步", action_build),
+    ("1", "一键打包发布新版  可输入版本号，回车沿用当前", action_build),
+    ("2", "仅修改版本号      不打包", action_set_version),
     ("3", "清理构建产物    删除 dist / build / __pycache__", action_clean),
-    ("4", "发布自动更新    启动 GitHub Actions，无需手动 Tag", action_publish),
 )
 
 

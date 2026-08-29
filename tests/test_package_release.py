@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
-from eye_care.update_service import MAIN_EXE_NAME, MANIFEST_NAME, UPDATER_EXE_NAME, _parse_update_feed
-from scripts.package_release import create_archive, package_name, write_update_feed
+from eye_care.update_service import MAIN_EXE_NAME, MANIFEST_NAME, UPDATER_EXE_NAME
+from scripts.package_release import create_archive, main as package_main, package_name
 from scripts.verify_release import verify_archive
 
 
@@ -39,17 +38,15 @@ class PackageReleaseTests(unittest.TestCase):
         verification = verify_archive(archive)
         self.assertEqual(verification["version"], "2.4.1")
 
-    def test_feed_contains_version_hash_size_and_only_rolling_tag(self) -> None:
-        archive, _ = create_archive(self.package, self.root / "out", "2.4.1")
-        feed_path = write_update_feed(
-            archive, self.root / "updates" / "latest.json", version="2.4.1", notes="修复计时",
-        )
-        feed = json.loads(feed_path.read_text(encoding="utf-8"))
-        self.assertEqual(feed["version"], "2.4.1")
-        self.assertIn("/releases/download/latest/", feed["package"]["url"])
-        self.assertEqual(len(feed["package"]["sha256"]), 64)
-        self.assertEqual(feed["package"]["size"], archive.stat().st_size)
-        self.assertTrue(_parse_update_feed(feed, "2.4.0")["has_update"])
+    def test_archive_command_creates_only_zip_and_checksum(self) -> None:
+        output = self.root / "release"
+        self.assertEqual(package_main([
+            str(self.package), "--archive", "--version", "2.4.1", "--output-dir", str(output),
+        ]), 0)
+        archive = output / package_name("2.4.1")
+        self.assertTrue(archive.is_file())
+        self.assertTrue(archive.with_name(archive.name + ".sha256").is_file())
+        self.assertFalse((output / "latest.json").exists())
 
 
 if __name__ == "__main__":
