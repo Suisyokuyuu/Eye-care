@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -129,6 +130,10 @@ def _merge_minute_row_into(merged: dict, rec: dict, field: str = "apps", schema:
     ts = str(rec.get("minute_start_utc", ""))
     local_date = str(rec.get("local_date", ""))
     if not ts or not local_date:
+        return
+    try:
+        ts = _iso_z(_parse_iso_z(ts))
+    except (ValueError, TypeError, OverflowError):
         return
     key = (local_date, ts)
     slot = merged.setdefault(
@@ -413,15 +418,98 @@ class JsonWalRepo(Repository):
             return []
         out: List[Dict[str, Any]] = []
         try:
-            with path.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8-sig") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    out.append(json.loads(line))
+                    try:
+                        rec = json.loads(line)
+                        if isinstance(rec, dict):
+                            out.append(rec)
+                    except (ValueError, TypeError):
+                        log.warning("repo.read_jsonl: skipped invalid line in %s", path.name)
         except Exception:
             log.exception("repo.read_jsonl failed: %s", str(path))
         return out
+
+    def _minute_rows(self, day: str, *, domains: bool = False, include_current: bool = True) -> List[Dict[str, Any]]:
+        """One cumulative row per minute, including unwritten data.
+
+        Main/WAL rows are successive snapshots, not independent deltas. Readers
+        must use the same max-per-key merge as the durable checkpoint.
+        Caller holds _lock.
+        """
+        field = "domains" if domains else "apps"
+        schema = "domain_minute@1" if domains else "minute@1"
+        main = self._domains_path(day) if domains else self._minutes_path(day)
+        wal = self._wal_domains_path(day) if domains else self._wal_minutes_path(day)
+        pending = self._wal_domains if domains else self._wal_minutes
+        merged = {}
+        for rec in self._read_jsonl(main) + self._read_jsonl(wal):
+            _merge_minute_row_into(merged, rec, field=field, schema=schema)
+        for line in pending.get(day, []):
+            _merge_minute_row_into(merged, json.loads(line), field=field, schema=schema)
+        start = self._cur_dom_minute_start_utc if domains else self._cur_minute_start_utc
+        current_day = self._cur_dom_minute_local_date if domains else self._cur_minute_local_date
+        items = self._cur_domains if domains else self._cur_apps
+        if include_current and start is not None and current_day == day and items:
+            _merge_minute_row_into(merged, {
+                "minute_start_utc": _iso_z(start), "local_date": day, field: dict(items),
+            }, field=field, schema=schema)
+        return [rec for _, rec in sorted(merged.items())]
+
+    def _minute_baseline(self, day: str, start: datetime, *, domains: bool = False) -> Dict[str, int]:
+        field = "domains" if domains else "apps"
+        ts = _iso_z(start)
+        for rec in self._minute_rows(day, domains=domains, include_current=False):
+            if rec["minute_start_utc"] == ts:
+                return dict(rec[field])
+        return {}
+
+    def export_snapshot(self, local_dates: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Copy a consistent backup without finalizing the active minute."""
+        with self._lock:
+            days = set(self._wal_minutes) | set(self._wal_domains) | set(self._wal_events)
+            for directory, pattern, prefix in (
+                (self.dir_minutes, "minute-*.jsonl", "minute-"),
+                (self.dir_domains, "domains-*.jsonl", "domains-"),
+                (self.dir_events, "events-*.jsonl", "events-"),
+                (self.dir_wal, "minutes-*.jsonl", "minutes-"),
+                (self.dir_wal, "domains-*.jsonl", "domains-"),
+                (self.dir_wal, "events-*.jsonl", "events-"),
+            ):
+                days.update(p.stem[len(prefix):] for p in directory.glob(pattern))
+            days.update(d for d in (self._cur_minute_local_date, self._cur_dom_minute_local_date) if d)
+            if local_dates is not None:
+                days = set(local_dates)
+            snapshot = {"minute_usage": {}, "minute_domains": {}, "events": {}}
+            for day in sorted(days):
+                snapshot["minute_usage"][day] = self._minute_rows(day)
+                snapshot["minute_domains"][day] = self._minute_rows(day, domains=True)
+                snapshot["events"][day] = (
+                    self._read_jsonl(self._events_path(day)) + self._read_jsonl(self._wal_events_path(day))
+                    + [json.loads(line) for line in self._wal_events.get(day, [])]
+                )
+            return snapshot
+
+    @contextmanager
+    def transfer_guard(self):
+        """Serialize imports with sampling and checkpoint all existing data first."""
+        with self._lock:
+            self._finalize_current_minute()
+            self._finalize_current_domain_minute()
+            # Reset even on I/O failure: a resumed sample must seed the saved
+            # (or still buffered) cumulative bucket instead of starting at zero.
+            self._cur_minute_start_utc = self._cur_dom_minute_start_utc = None
+            self._cur_minute_local_date = self._cur_dom_minute_local_date = None
+            self.merge()
+            if any(self._wal_minutes.values()) or any(self._wal_domains.values()) or any(self._wal_events.values()):
+                raise OSError("Cannot import: local data could not be flushed")
+            if any(p.stat().st_size for p in self.dir_wal.glob("*.jsonl")):
+                raise OSError("Cannot import: local WAL could not be merged")
+            # The next sample seeds its minute from the post-import totals.
+            yield
 
     # ---------------- cache builders ----------------
     def _apply_minute_record_to_cache(self, rec: Dict[str, Any]) -> None:
@@ -455,14 +543,13 @@ class JsonWalRepo(Repository):
         self._hourly_cache[day] = defaultdict(int)  # type: ignore
         self._events_cache.pop(day, None)
 
-        for rec in self._read_jsonl(self._minutes_path(day)):
-            self._apply_minute_record_to_cache(rec)
-        for rec in self._read_jsonl(self._wal_minutes_path(day)):
+        for rec in self._minute_rows(day):
             self._apply_minute_record_to_cache(rec)
 
         # events
         evts: List[EventRecord] = []
-        for rec in self._read_jsonl(self._events_path(day)) + self._read_jsonl(self._wal_events_path(day)):
+        for rec in (self._read_jsonl(self._events_path(day)) + self._read_jsonl(self._wal_events_path(day))
+                    + [json.loads(line) for line in self._wal_events.get(day, [])]):
             try:
                 evts.append(
                     EventRecord(
@@ -494,9 +581,7 @@ class JsonWalRepo(Repository):
         """独立于 _load_day_into_cache，只在浏览器视图查询（或今天预热）时触发。
         重置该天后从磁盘 主文件 + WAL 重建。"""
         self._domain_daily_cache[day] = defaultdict(int)  # type: ignore
-        for rec in self._read_jsonl(self._domains_path(day)):
-            self._apply_domain_record_to_cache(rec)
-        for rec in self._read_jsonl(self._wal_domains_path(day)):
+        for rec in self._minute_rows(day, domains=True):
             self._apply_domain_record_to_cache(rec)
 
     # ---------------- writes ----------------
@@ -575,10 +660,15 @@ class JsonWalRepo(Repository):
             if self._cur_minute_start_utc is None:
                 self._cur_minute_start_utc = minute_start
                 self._cur_minute_local_date = local_day
+                self._cur_apps = defaultdict(int, self._minute_baseline(local_day, minute_start))
             elif minute_start != self._cur_minute_start_utc:
                 self._finalize_current_minute()
                 self._cur_minute_start_utc = minute_start
                 self._cur_minute_local_date = local_day
+                self._cur_apps = defaultdict(int, self._minute_baseline(local_day, minute_start))
+
+            if local_day not in self._daily_cache:
+                self._load_day_into_cache(local_day)
 
             # Update fast daily cache immediately (写入保护: clamp to >= 0)
             d = self._daily_cache.setdefault(local_day, defaultdict(int))  # type: ignore
@@ -586,6 +676,10 @@ class JsonWalRepo(Repository):
 
             # Update current minute bucket (写入保护: clamp to >= 0)
             self._cur_apps[delta.app_short] = max(0, self._cur_apps[delta.app_short] + int(delta.seconds))
+            hour = minute_start.astimezone().hour
+            hourly = self._hourly_cache.setdefault(local_day, defaultdict(int))
+            hourly[hour] = max(0, hourly[hour] + int(delta.seconds))
+            self._invalidate_caches_for_date(local_day, app_key=delta.app_short)
 
     def add_domain_usage(self, delta: DomainDelta) -> None:
         """domain 平行维度：分钟边界 finalize→WAL，daily cache 即时累加供 UI。"""
@@ -603,10 +697,15 @@ class JsonWalRepo(Repository):
             if self._cur_dom_minute_start_utc is None:
                 self._cur_dom_minute_start_utc = minute_start
                 self._cur_dom_minute_local_date = local_day
+                self._cur_domains = defaultdict(int, self._minute_baseline(local_day, minute_start, domains=True))
             elif minute_start != self._cur_dom_minute_start_utc:
                 self._finalize_current_domain_minute()
                 self._cur_dom_minute_start_utc = minute_start
                 self._cur_dom_minute_local_date = local_day
+                self._cur_domains = defaultdict(int, self._minute_baseline(local_day, minute_start, domains=True))
+
+            if local_day not in self._domain_daily_cache:
+                self._load_domains_into_cache(local_day)
 
             # 即时累加日缓存（clamp >= 0）
             d = self._domain_daily_cache.setdefault(local_day, defaultdict(int))  # type: ignore
@@ -648,8 +747,9 @@ class JsonWalRepo(Repository):
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             self._wal_minutes[day].append(line)
 
-            # Also apply to caches
-            self._apply_minute_record_to_cache(payload)
+            # Reload the cumulative minute view; adding a snapshot directly to
+            # the cache would count overlapping/retried records twice.
+            self._load_day_into_cache(day)
             
             # 失效相关缓存（延迟导入避免循环依赖）
             # 失效该日期的所有 app 的 API 缓存和 last_active 缓存
@@ -657,6 +757,8 @@ class JsonWalRepo(Repository):
 
     def add_event(self, evt: EventRecord) -> None:
         with self._lock:
+            if evt.local_date not in self._events_cache:
+                self._load_day_into_cache(evt.local_date)
             payload = {
                 "_schema": "event@1",
                 "utc_ts": _iso_z(evt.utc_ts),
@@ -745,7 +847,7 @@ class JsonWalRepo(Repository):
 
             out: Dict[int, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
             # Read minute records directly to preserve per-key breakdown
-            for rec in self._read_jsonl(self._minutes_path(local_date)) + self._read_jsonl(self._wal_minutes_path(local_date)):
+            for rec in self._minute_rows(local_date):
                 try:
                     apps: Dict[str, int] = rec.get("apps") or {}
                     mu = _parse_iso_z(rec["minute_start_utc"])
@@ -775,7 +877,7 @@ class JsonWalRepo(Repository):
             if not self.dir_domains.exists():
                 return {}
             out: Dict[int, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-            for rec in self._read_jsonl(self._domains_path(local_date)) + self._read_jsonl(self._wal_domains_path(local_date)):
+            for rec in self._minute_rows(local_date, domains=True):
                 try:
                     domains: Dict[str, int] = rec.get("domains") or {}
                     mu = _parse_iso_z(rec["minute_start_utc"])
@@ -835,7 +937,8 @@ class JsonWalRepo(Repository):
         cur = end_d.isoformat()
         start_str = start_d.isoformat()
         while cur >= start_str:
-            recs = self._read_jsonl(self._minutes_path(cur)) + self._read_jsonl(self._wal_minutes_path(cur))
+            with self._lock:
+                recs = self._minute_rows(cur)
             for rec in recs:
                 try:
                     apps = rec.get("apps") or {}
@@ -868,7 +971,9 @@ class JsonWalRepo(Repository):
         cur = start_d.isoformat()
         end_str = end_d.isoformat()
         while cur <= end_str:
-            for rec in self._read_jsonl(self._minutes_path(cur)) + self._read_jsonl(self._wal_minutes_path(cur)):
+            with self._lock:
+                recs = self._minute_rows(cur)
+            for rec in recs:
                 try:
                     apps = rec.get("apps") or {}
                     sec = int(apps.get(app_key, 0) or 0)
@@ -1019,7 +1124,7 @@ class JsonWalRepo(Repository):
                     merged = {}
 
                     if main_path.exists():
-                        with main_path.open("r", encoding="utf-8") as f:
+                        with main_path.open("r", encoding="utf-8-sig") as f:
                             for line in f:
                                 s = line.strip()
                                 if not s:
@@ -1031,7 +1136,7 @@ class JsonWalRepo(Repository):
                                     continue
 
                     wal_seen = set()
-                    with wal_path.open("r", encoding="utf-8") as f:
+                    with wal_path.open("r", encoding="utf-8-sig") as f:
                         for line in f:
                             s = line.strip()
                             if not s:
@@ -1063,7 +1168,7 @@ class JsonWalRepo(Repository):
                         existing_keys.add(_make_dedup_key(s, "event"))
 
                 wal_seen = set()
-                with main_path.open("a", encoding="utf-8") as out, wal_path.open("r", encoding="utf-8") as f:
+                with main_path.open("a", encoding="utf-8") as out, wal_path.open("r", encoding="utf-8-sig") as f:
                     for line in f:
                         s = line.strip()
                         if not s:
@@ -1171,17 +1276,19 @@ class JsonWalRepo(Repository):
                 if not recs:
                     return
                 out: List[str] = []
+                changed = False
                 for rec in recs:
                     apps: Dict[str, Any] = rec.get("apps") or {}
                     if app_key not in apps:
                         out.append(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
                         continue
                     total_removed_sec += int(apps.get(app_key, 0) or 0)
+                    changed = True
                     del apps[app_key]
                     rec["apps"] = apps
                     if apps:
                         out.append(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
-                if len(out) != len(recs):
+                if changed:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
                     files_touched.append(str(path))
@@ -1194,6 +1301,25 @@ class JsonWalRepo(Repository):
             for p in sorted(self.dir_wal.glob("minutes-*.jsonl")):
                 day = p.stem.replace("minutes-", "")
                 process_path(p, day)
+
+            # Exclusion must also remove the unfinalized minute and any writes
+            # buffered after an I/O failure, otherwise the next flush revives it.
+            if app_key in self._cur_apps:
+                self._cur_apps.pop(app_key)
+                if self._cur_minute_local_date not in days_touched:
+                    days_touched.append(self._cur_minute_local_date)
+            for day, lines in self._wal_minutes.items():
+                kept = []
+                for line in lines:
+                    rec = json.loads(line)
+                    apps = rec.get("apps") or {}
+                    if app_key in apps:
+                        del apps[app_key]
+                        if day not in days_touched:
+                            days_touched.append(day)
+                    if apps:
+                        kept.append(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
+                lines[:] = kept
 
             for d in days_touched:
                 # 联动淘汰三套缓存
@@ -1217,6 +1343,8 @@ class JsonWalRepo(Repository):
             for d in local_dates:
                 try:
                     self._load_day_into_cache(d)
+                    if self.dir_domains.exists():
+                        self._load_domains_into_cache(d)
                 except Exception:
                     log.exception("repo.reload_days failed: day=%s", d)
 

@@ -197,7 +197,7 @@ class DomainRepoTests(unittest.TestCase):
         # 基准时刻本地小时
         hour = int(self.base.astimezone().hour)
         self.assertIn(hour, bd)
-        self.assertEqual(bd[hour].get("a.com"), 10 + 3 + 7)
+        self.assertEqual(bd[hour].get("a.com"), 10 + 3 + 7 + 1)  # Includes the active minute.
         self.assertEqual(bd[hour].get("b.com"), 5)
         repo.close()
 

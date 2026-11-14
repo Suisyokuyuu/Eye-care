@@ -17,7 +17,8 @@ from eye_care.ui.action_contracts import normalize_notify_window_action
 from eye_care.ui.file_dialog import _create_file_dialog_safe
 
 
-def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_console: bool = False) -> None:
+def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_console: bool = False,
+                 startup_check: bool = False) -> None:
     os.chdir(str(PROJECT_ROOT))
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -32,11 +33,12 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     from eye_care.ui.win_effects import WinEffects
 
     try:
-        from PySide6.QtCore import QMetaObject, QObject, QTimer, QUrl, Qt, Signal, Slot
-        from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon
-        from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+        from PySide6.QtCore import QMetaObject, QObject, QTimer, QUrl, Qt, Signal, Slot, QRectF
+        from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainterPath, QRegion
+        from PySide6.QtQuick import QQuickWindow
+        from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
     except Exception as exc:  # pragma: no cover - depends on local runtime
-        raise RuntimeError("PySide6 (QtQuick) is required for --host qt") from exc
+        raise RuntimeError("无法加载 Qt 图形组件") from exc
 
     setup_logging(data_dir / "debug.log")
     log = logging.getLogger(__name__)
@@ -546,12 +548,6 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             log.info("qt.bridge.export_all")
             try:
                 from eye_care.data.transfer import export_all
-                db_path = data_dir / "eyecare.db"
-                if db_path.exists():
-                    import sqlite3
-                    conn = sqlite3.connect(str(db_path))
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    conn.close()
                 path = _create_file_dialog_safe(
                     "save",
                     save_filename="eye_care_export.zip",
@@ -560,7 +556,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 if not path:
                     return {"status": "cancel"}
                 out_path = Path(path if isinstance(path, str) else path[0]).resolve()
-                meta = export_all(data_dir, out_path)
+                meta = export_all(data_dir, out_path, repo=_controller().repo)
                 return {"status": "ok", "path": str(out_path), "meta": meta}
             except Exception as exc:
                 log.exception("qt bridge exportAll failed")
@@ -687,11 +683,24 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 QMenu::indicator{width:12px;height:12px;margin-left:2px;}
             """)
             self.actions = {}
-            icon = QIcon(str(self.icon_path))
+            # PyInstaller resources may live under _MEIPASS rather than beside the EXE.
+            icon = QIcon()
+            resource_roots = dict.fromkeys((PROJECT_ROOT, Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))))
+            for resource_root in resource_roots:
+                for name in ("icon.ico", "icon.png"):
+                    candidate = resource_root / name
+                    icon = QIcon(str(candidate))
+                    if not icon.isNull():
+                        self.icon_path = candidate
+                        break
+                if not icon.isNull():
+                    break
             if icon.isNull():
-                icon = QIcon()
-                log.warning("qt.tray.icon_missing path=%s", self.icon_path)
+                log.warning("qt.tray.icon_missing; using system fallback")
+                icon = QApplication.style().standardIcon(QStyle.SP_ComputerIcon)
+            self.base_icon = icon
             self.tray.setIcon(icon)
+            QApplication.setWindowIcon(icon)
             self.tray.setToolTip("EyE Care")
             self._build_menu()
             self.tray.setContextMenu(self.menu)
@@ -735,8 +744,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         def _set_mode_icon(self, mode: str) -> None:
             """Set tray icon with a mode indicator (colored dot, bottom-right)."""
             log.info("qt.tray.set_mode_icon mode=%s", mode)
-            base = QIcon(str(self.icon_path))
-            pixmap = base.pixmap(32, 32)
+            pixmap = self.base_icon.pixmap(32, 32)
             if pixmap.isNull():
                 return
             from PySide6.QtGui import QPainter
@@ -764,13 +772,19 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 _show_main_window()
 
         def start(self) -> bool:
-            if not QSystemTrayIcon.isSystemTrayAvailable():
-                log.warning("qt.tray.unavailable")
-                return False
             self._sync_menu_state()
+            # Keep the request while Explorer starts; Qt registers it when the tray returns.
             self.tray.show()
-            log.info("qt.tray.started icon=%s", self.icon_path)
-            return True
+            available = self.available()
+            qml_root_ref["value"].setProperty("trayAvailable", available)
+            if not available:
+                log.warning("qt.tray.deferred; keeping taskbar entry available")
+            log.info("qt.tray.started icon=%s available=%s", self.icon_path, available)
+            return available
+
+        def available(self) -> bool:
+            return (QSystemTrayIcon.isSystemTrayAvailable()
+                    and self.tray.isVisible() and not self.tray.icon().isNull())
 
         def stop(self) -> None:
             try:
@@ -871,7 +885,8 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         is_debug_enabled(config_enabled=getattr(controller.cfg, "debug_enabled", False))
     except Exception as e:
         log.debug("debug_switch init skipped: %s", e)
-    controller.start()
+    if not startup_check:
+        controller.start()
     _set_controller(controller)
     diag.emit("DIAG_CONTROLLER_READY", log, "Controller就绪")
 
@@ -921,7 +936,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
 
     try:
         notify_enabled = bool(getattr(getattr(controller, "cfg", None), "notify_enabled", True)) if controller is not None else True
-        if notify_enabled:
+        if notify_enabled and not startup_check:
             notifier_service_ref["value"].start()
     except Exception:
         log.exception("qt notifier_service start failed")
@@ -1069,7 +1084,29 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         roots = engine.rootObjects()
         if not roots:
             raise RuntimeError("AppShell.qml 加载失败（rootObjects 空）")
+        if not startup_check:
+            QTimer.singleShot(0, bridges["notionBridge"].startAutomatic)
         root = roots[0]
+        if startup_check:
+            # Render checks must not receive clicks intended for the user's
+            # foreground app or let those clicks dismiss the test dialogs.
+            root.setFlags(root.flags() | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        native_rounding = win_effects.round_main_window(int(root.winId()))
+        if not native_rounding:
+            def _update_main_corner_mask(*_args):
+                if root.visibility() in (QQuickWindow.Maximized, QQuickWindow.FullScreen):
+                    root.setMask(QRegion())
+                    return
+                outline = QPainterPath()
+                outline.addRoundedRect(QRectF(0, 0, root.width(), root.height()), 12, 12)
+                root.setMask(QRegion(outline.toFillPolygon().toPolygon()))
+            _update_main_corner_mask()
+            root.widthChanged.connect(_update_main_corner_mask)
+            root.heightChanged.connect(_update_main_corner_mask)
+            root.visibilityChanged.connect(_update_main_corner_mask)
+            root.screenChanged.connect(_update_main_corner_mask)
+            _qml_refs["_mainCornerMask"] = _update_main_corner_mask
+            log.info("qt.main_window.rounded_corners fallback=window_mask radius=12")
         qml_root_ref["value"] = root
         main_window_ref["value"] = root
         initial_screen = root.screen() or QGuiApplication.primaryScreen()
@@ -1166,7 +1203,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     # 自动升级：启动后静默检查，此后每 6 小时检查一次。新版下载并校验完成后只提示，
     # 用户确认“立即重启升级”才退出当前进程，独立 updater 随后替换并重启。
     update_bridge = (_qml_refs.get("bridges") or {}).get("updateBridge")
-    if update_bridge is not None:
+    if update_bridge is not None and not startup_check:
         def _on_update_ready(version: str) -> None:
             try:
                 tray.actions["check_update"].setText("安装已下载更新")
@@ -1197,11 +1234,17 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     mode_cache = {"value": _tray_mode_from_state()}
 
     def _sync_tray_mode_if_changed() -> None:
+        current_tray = tray_ref.get("value")
+        root = qml_root_ref.get("value")
+        if current_tray is not None and root is not None:
+            available = current_tray.available()
+            if root.property("trayAvailable") != available:
+                root.setProperty("trayAvailable", available)
+                log.info("qt.tray.availability_changed available=%s", available)
         mode = _tray_mode_from_state()
         if mode == mode_cache.get("value"):
             return
         mode_cache["value"] = mode
-        current_tray = tray_ref.get("value")
         if current_tray is not None:
             current_tray._set_mode_icon(mode)
         log.info("qt.tray.mode_changed mode=%s", mode)
@@ -1223,11 +1266,17 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
                 notifier.stop(timeout_s=2.0)
             except Exception:
                 log.exception("qt shutdown: notifier.stop failed")
+        notion = (_qml_refs.get("bridges") or {}).get("notionBridge")
+        if notion is not None:
+            notion.shutdown()
         # 先停 controller 再停 favicon：controller 的 tick 线程是 favicon 预取的生产者，
         # 反过来会让关闭途中的预取又把 worker 唤起（FaviconService 侧另有 _stopped 兜底）。
         if controller is not None:
             try:
-                controller.stop()
+                if startup_check:
+                    controller.repo.close()
+                else:
+                    controller.stop()
             except Exception:
                 log.exception("qt shutdown: controller.stop failed")
         favicon = (_qml_refs.get("bridges") or {}).get("_faviconService")
@@ -1242,4 +1291,59 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     if no_single:
         log.info("qt host single-instance bypass enabled")
 
-    app.exec()
+    if startup_check:
+        def finish_check(ok, error):
+            if not ok:
+                log.error("Actual desktop startup check failed: %s", error)
+            (data_dir / "startup_check.json").write_text(json.dumps({
+                "ok": ok, "error": error, "frozen": bool(getattr(sys, "frozen", False)),
+                "executable": sys.executable, "main_window": True, "notion_panel": ok,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            app.exit(0 if ok else 1)
+
+        def verify_sync_window():
+            root = qml_root_ref.get("value")
+            try:
+                panel = root.findChild(QObject, "notionSyncPage")
+                if panel is None or not panel.property("open"):
+                    raise RuntimeError("Notion sync panel did not open")
+                if not root.grabWindow().save(str(data_dir / "startup-notion.png")):
+                    raise RuntimeError("Could not capture the actual sync panel")
+                panel.setProperty("open", False)
+                QMetaObject.invokeMethod(root, "openSettings")
+                QTimer.singleShot(400, verify_settings_window)
+            except Exception as exc:
+                finish_check(False, str(exc))
+
+        def verify_settings_window():
+            root = qml_root_ref.get("value")
+            try:
+                panel = root.findChild(QObject, "settingsPage")
+                if panel is None or not panel.property("open"):
+                    raise RuntimeError("Settings panel did not open")
+                if not root.grabWindow().save(str(data_dir / "startup-settings.png")):
+                    raise RuntimeError("Could not capture appearance settings")
+                finish_check(True, "")
+            except Exception as exc:
+                finish_check(False, str(exc))
+
+        def verify_window():
+            root = qml_root_ref.get("value")
+            try:
+                if root is None or not root.isVisible():
+                    raise RuntimeError("Main window did not become visible")
+                if not isinstance(root, QQuickWindow):
+                    raise RuntimeError(f"Unexpected window wrapper: {type(root).__name__}")
+                if not root.grabWindow().save(str(data_dir / "startup-main.png")):
+                    raise RuntimeError("Could not capture the actual main window")
+                if not QMetaObject.invokeMethod(root, "openNotionSync"):
+                    raise RuntimeError("Could not invoke the sync panel")
+                QTimer.singleShot(400, verify_sync_window)
+            except Exception as exc:
+                finish_check(False, str(exc))
+
+        QTimer.singleShot(1200, verify_window)
+
+    exit_code = app.exec()
+    if startup_check and exit_code:
+        raise RuntimeError("Desktop startup check failed; see startup_check.json")

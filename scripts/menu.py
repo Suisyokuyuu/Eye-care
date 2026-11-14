@@ -200,7 +200,7 @@ def action_build() -> None:
 def action_clean() -> None:
     _header("清理构建产物")
     print("  将删除：dist\\、build\\、以及所有 __pycache__ 目录。")
-    _warn("dist\\EyE Care\\user_data 里如果有数据也会一并删除。")
+    _info("dist\\EyE Care\\user_data 若存在，会先备份到 outputs\\user-data-backups。")
     print()
 
     if _ask("确认删除吗？输入 y 回车: ").lower() != "y":
@@ -208,8 +208,21 @@ def action_clean() -> None:
 
     print()
     import shutil
+    import uuid
+    runtime_data = DIST_DIR / "EyE Care" / "user_data"
+    if runtime_data.is_dir() and any(runtime_data.iterdir()):
+        backup = PROJECT_ROOT / "outputs" / "user-data-backups" / str(uuid.uuid4())
+        try:
+            shutil.copytree(runtime_data, backup)
+            _info(f"数据已备份：{backup}")
+        except OSError as exc:
+            _err(f"数据备份失败，已取消清理：{exc}")
+            _pause()
+            return
 
     for d in (DIST_DIR, BUILD_DIR):
+        if d.resolve() == PROJECT_ROOT.resolve() or not d.resolve().is_relative_to(PROJECT_ROOT.resolve()):
+            raise RuntimeError("清理路径超出项目目录")
         if d.exists():
             try:
                 shutil.rmtree(d)

@@ -25,10 +25,10 @@ VERSION_PY = PROJECT_ROOT / "eye_care" / "version.py"
 VERSION_INFO = PROJECT_ROOT / "version_info.txt"
 
 # exe 属性里的固定字段（与版本号无关的部分）。要改公司名/版权年份就改这里。
-COMPANY_NAME = "EyE Care"
+COMPANY_NAME = "Suisyokuyuu"
 FILE_DESCRIPTION = "EyE Care - Eye Care Reminder"
 INTERNAL_NAME = "EyE Care"
-LEGAL_COPYRIGHT = "Copyright © 2026"
+LEGAL_COPYRIGHT = "Copyright © 2026 Suisyokuyuu"
 ORIGINAL_FILENAME = "EyE Care.exe"
 PRODUCT_NAME = "EyE Care"
 # 语言/代码页：0804=简体中文，04b0=1200(Unicode)。两处必须成对。

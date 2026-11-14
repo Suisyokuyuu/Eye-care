@@ -12,6 +12,11 @@ class AppConfig:
     # 休息时长单位，仅用于 UI 展示与输入："sec" | "min"
     reminder_rest_unit: str = "sec"
     theme_name: str = "solid_dark"
+    # Local wallpaper, relative to user_data. Never exported to Notion.
+    background_image: str = ""
+    background_dim: int = 35
+    background_blur: int = 0
+    panel_opacity: int = 68
 
     # ---- UI/behavior (persisted) ----
     # 是否启动时默认进入勿扰模式（仅影响下次启动）
@@ -73,3 +78,13 @@ class AppConfig:
     )
     # 站点显示名别名（key = site_key，如 mail.google.com → "Gmail"）；留空=显示域名。
     site_display_overrides: Dict[str, str] = field(default_factory=dict)
+
+    # AI export / Notion. Secrets are encrypted separately, never in config.
+    notion_parent_page: str = ""
+    notion_dashboard_page: str = ""
+    notion_device_name: str = ""
+    notion_sync_days: int = 7
+    notion_include_sites: bool = False
+    notion_sync_on_startup: bool = False
+    notion_sync_daily: bool = False
+    notion_sync_time: str = "23:00"

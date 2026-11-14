@@ -1,5 +1,10 @@
 # runtime data / logs / diagnostics
 /user_data/
+/outputs/
+/dev_data/
+/.env
+/.env.*
+*.log
 CLAUDE.md
 
 # python cache

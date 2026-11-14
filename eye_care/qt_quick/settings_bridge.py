@@ -55,6 +55,12 @@ def sanitize(payload: dict) -> dict:
     """按 app.js 口径 clamp/规整设置 payload，返回只含合法 key 的新 dict。"""
     p = dict(payload or {})
     out: dict = {}
+    if "background_image_url" in p:
+        out["background_image_url"] = str(p["background_image_url"] or "")
+    for key, lo, hi, default in (("background_dim", 0, 80, 35), ("background_blur", 0, 30, 0),
+                                  ("panel_opacity", 40, 95, 68)):
+        if key in p:
+            out[key] = _clamp(p[key], lo, hi, default)
     # 布尔
     for k in ("startup_launch_at_login", "startup_dnd", "startup_show_main",
               "notify_enabled", "notify_sound_enabled", "rest_end_sound_enabled",
@@ -95,6 +101,9 @@ def cfg_to_dict(cfg) -> dict:
     """把 AppConfig 读成设置页 view-model（含默认兜底）。"""
     g = lambda k, d: getattr(cfg, k, d)
     return {
+        "background_dim": g("background_dim", 35),
+        "background_blur": g("background_blur", 0),
+        "panel_opacity": g("panel_opacity", 68),
         "startup_launch_at_login": bool(g("startup_launch_at_login", False)),
         "startup_dnd": bool(g("startup_dnd", False)),
         "startup_show_main": bool(g("startup_show_main", True)),
@@ -124,13 +133,20 @@ def build_settings_io(controller, *, persist: bool, log: Optional[logging.Logger
     lg = log or logging.getLogger(__name__)
 
     def loader() -> dict:
-        return cfg_to_dict(controller.cfg)
+        from .appearance import wallpaper_url
+        value = cfg_to_dict(controller.cfg)
+        value["background_image_url"] = wallpaper_url(controller.data_dir, getattr(controller.cfg, "background_image", ""))
+        return value
 
     def saver(clean: dict) -> None:
         if not persist:
             lg.info("[settings 预览沙箱] 不落盘，提交内容=%s", clean)
             return
         cfg = controller.cfg
+        clean = dict(clean)
+        if "background_image_url" in clean:
+            from .appearance import import_wallpaper
+            clean["background_image"] = import_wallpaper(controller.data_dir, clean.pop("background_image_url"))
         launch_changed = ("startup_launch_at_login" in clean
                           and bool(clean["startup_launch_at_login"]) != bool(getattr(cfg, "startup_launch_at_login", False)))
         for k, v in clean.items():
@@ -158,17 +174,32 @@ class SettingsBridge(QObject):
     """设置页桥：QML 读 `config` 填充、`apply(payload)` 提交。"""
 
     configChanged = Signal()
+    errorChanged = Signal()
 
     def __init__(self, loader: Callable[[], dict], saver: Callable[[dict], None], *, parent=None):
         super().__init__(parent)
         self._loader = loader
         self._saver = saver
         self._config: dict = {}
+        self._error_message = ""
         self.reload()
 
     @Property("QVariantMap", notify=configChanged)
     def config(self) -> dict:
         return self._config
+
+    @Property(str, notify=errorChanged)
+    def errorMessage(self):
+        return self._error_message
+
+    @Slot(result=str)
+    def chooseBackground(self):
+        from eye_care.ui.file_dialog import _create_file_dialog_safe
+        from PySide6.QtCore import QUrl
+        path = _create_file_dialog_safe("open", title="选择背景图片", file_types=("Images (*.jpg *.jpeg *.png *.webp *.bmp)",))
+        if not path:
+            return ""
+        return QUrl.fromLocalFile(str(path if isinstance(path, str) else path[0])).toString()
 
     @Slot()
     def reload(self) -> None:
@@ -179,14 +210,20 @@ class SettingsBridge(QObject):
             self._config = {}
         self.configChanged.emit()
 
-    @Slot("QVariantMap")
-    def apply(self, payload) -> None:
+    @Slot("QVariantMap", result=bool)
+    def apply(self, payload) -> bool:
         clean = sanitize(dict(payload) if payload else {})
         try:
             self._saver(clean)
         except Exception as e:  # noqa: BLE001
             log.warning("settings apply 落库失败: %s", e)
+            self._error_message = str(e) if isinstance(e, ValueError) else "设置保存失败，请检查数据目录是否可写。"
+            self.errorChanged.emit()
+            return False
+        self._error_message = ""
+        self.errorChanged.emit()
         self.reload()
+        return True
 
     @Slot(bool)
     def setShowOnboarding(self, show: bool) -> None:

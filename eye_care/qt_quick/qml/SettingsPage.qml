@@ -9,6 +9,7 @@ import QtQuick.Shapes
 // 用法：放在 AppShell 顶层，`open=true` 显示；点【应用】/【取消】/X / 背景 → closed()。
 Item {
     id: page
+    objectName: "settingsPage"
     anchors.fill: parent
     // 渐入渐出
     visible: opacity > 0.01
@@ -37,6 +38,10 @@ Item {
     property bool fullscreenDnd: true    // 前台全屏时自动勿扰（默认开）
     property bool showOnboarding: true   // true=启动显示引导
     property bool recordBrowser: false   // 记录浏览器 domain 统计（隐私默认关）
+    property string backgroundImage: ""
+    property int backgroundDim: 35
+    property int backgroundBlur: 0
+    property int panelOpacity: 68
 
     // 引导用矩形：未勾选休息提醒时的紧凑卡片（约 600px 高，无休息设置组）
     function cardCompactRect() {
@@ -77,10 +82,18 @@ Item {
         fullscreenDnd  = c.fullscreen_dnd !== false;
         showOnboarding = c.show_onboarding !== false;
         recordBrowser  = c.record_browser_enabled === true;
+        backgroundImage = c.background_image_url || "";
+        backgroundDim = c.background_dim === undefined ? 35 : c.background_dim;
+        backgroundBlur = c.background_blur || 0;
+        panelOpacity = c.panel_opacity === undefined ? 68 : c.panel_opacity;
     }
     function _buildPayload() {
         var restSec = (restUnit === "min") ? restDuration * 60 : restDuration;
         return {
+            "background_image_url": backgroundImage,
+            "background_dim": backgroundDim,
+            "background_blur": backgroundBlur,
+            "panel_opacity": panelOpacity,
             "startup_launch_at_login": launchAtLogin,
             "startup_dnd": startupDnd,
             "startup_show_main": startupShow,
@@ -99,8 +112,7 @@ Item {
         };
     }
     function applyAndClose() {
-        page.bridge.apply(page._buildPayload());
-        page.closed();
+        if (page.bridge.apply(page._buildPayload())) page.closed();
     }
     // 引导用：保存设置但不关闭页面
     function applyOnly() {
@@ -159,6 +171,7 @@ Item {
             // 可滚动正文（设置项较多时不溢出）
             Flickable {
                 id: bodyFlick
+                objectName: "settingsBody"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentWidth: width
@@ -169,7 +182,7 @@ Item {
 
                 ColumnLayout {
                     id: body
-                    width: parent.width
+                    width: parent.width - 20
                     spacing: 16
 
                     // 启动引导
@@ -323,6 +336,45 @@ Item {
                         Check { text: "启用通知提示音";     checked: page.notifySound;  onToggled: page.notifySound = v }
                         Check { text: "启用休息结束提示音"; checked: page.restEndSound; onToggled: page.restEndSound = v }
                     }
+                    Divider {}
+                    // 背景选项集中在末尾，与常用行为设置分开。
+                    ColumnLayout {
+                        id: appearanceSection
+                        objectName: "appearanceSection"
+                        Layout.fillWidth: true; spacing: 12
+                        FieldLabel { text: "背景与透明效果" }
+                        Image {
+                            Layout.fillWidth: true; Layout.preferredHeight: 100
+                            visible: page.backgroundImage !== ""; source: page.backgroundImage
+                            fillMode: Image.PreserveAspectCrop; clip: true
+                            sourceSize.width: 700; sourceSize.height: 200
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 8
+                            FooterBtn {
+                                Layout.fillWidth: true; text: "更换背景图"; primary: false
+                                onClicked: { var url = page.bridge.chooseBackground(); if (url) page.backgroundImage = url; }
+                            }
+                            FooterBtn { Layout.fillWidth: true; text: "恢复默认"; primary: false; onClicked: page.backgroundImage = "" }
+                        }
+                        HelpText { text: "背景图仅保存在本机。使用背景图时，面板显示磨砂透明效果。" }
+                        RangeSetting {
+                            controlName: "backgroundDim"; caption: "背景变暗"; unit: "%"
+                            visible: page.backgroundImage !== ""; value: page.backgroundDim
+                            minimum: 0; maximum: 80; onValueEdited: function(v) { page.backgroundDim = v; }
+                        }
+                        RangeSetting {
+                            controlName: "backgroundBlur"; caption: "背景模糊"
+                            visible: page.backgroundImage !== ""; value: page.backgroundBlur
+                            minimum: 0; maximum: 30; onValueEdited: function(v) { page.backgroundBlur = v; }
+                        }
+                        RangeSetting {
+                            controlName: "panelOpacity"; caption: "面板不透明度"; unit: "%"
+                            visible: page.backgroundImage !== ""; value: page.panelOpacity
+                            minimum: 40; maximum: 95; onValueEdited: function(v) { page.panelOpacity = v; }
+                        }
+                    }
+                    HelpText { text: page.bridge ? page.bridge.errorMessage : ""; color: "#F87171"; visible: text !== "" }
                 }
             }
 
@@ -387,6 +439,44 @@ Item {
 
     // ── 内联组件 ──
 
+    component RangeSetting: ColumnLayout {
+        id: control
+        property string caption: ""
+        property string controlName: ""
+        property string unit: ""
+        property int value: 0
+        property int minimum: 0
+        property int maximum: 100
+        signal valueEdited(int v)
+        Layout.fillWidth: true; spacing: 4
+        RowLayout {
+            Layout.fillWidth: true
+            FieldLabel { text: control.caption }
+            Item { Layout.fillWidth: true }
+            Text { text: control.value + control.unit; color: "#94a3b8"; font.pixelSize: 12 }
+        }
+        Slider {
+            id: range
+            objectName: control.controlName + "Slider"
+            Layout.fillWidth: true; implicitHeight: 26
+            from: control.minimum; to: control.maximum; stepSize: 1
+            value: control.value; hoverEnabled: true
+            Accessible.name: control.caption
+            onMoved: control.valueEdited(Math.round(value))
+            background: Rectangle {
+                x: range.leftPadding; y: range.topPadding + (range.availableHeight - height) / 2
+                width: range.availableWidth; height: 6; radius: 3; color: "#1E293B"
+                Rectangle { width: range.visualPosition * parent.width; height: parent.height; radius: 3; color: "#3B82F6" }
+            }
+            handle: Rectangle {
+                x: range.leftPadding + range.visualPosition * (range.availableWidth - width)
+                y: range.topPadding + (range.availableHeight - height) / 2
+                width: 16; height: 16; radius: 8
+                color: range.pressed ? "#BFDBFE" : "#60A5FA"
+                border.color: range.activeFocus ? "#ffffff" : "#93C5FD"
+            }
+        }
+    }
     component FieldLabel: Text { color: "#D1D5DB"; font.pixelSize: 14; font.weight: Font.Medium }
     component HelpText: Text {
         property bool dim: false
@@ -473,9 +563,10 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 15; height: 15; radius: 7.5
                 color: "transparent"; border.color: "#60A5FA"; border.width: 1
-                Text {
-                    anchors.centerIn: parent; text: "i"
-                    color: "#60A5FA"; font.pixelSize: 10; font.bold: true
+                Item {
+                    anchors.centerIn: parent; width: 4; height: 8
+                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 0; width: 2; height: 2; radius: 1; color: "#60A5FA" }
+                    Rectangle { anchors.horizontalCenter: parent.horizontalCenter; y: 3.5; width: 1.5; height: 4.5; radius: 0.75; color: "#60A5FA" }
                 }
             }
         }

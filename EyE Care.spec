@@ -22,8 +22,10 @@ a = Analysis(
         ('icon.ico', '.'),
         ('icon.png', '.'),
         ('README.md', '.'),
+        ('screenshot.png', '.'),
+        ('使用手册.md', '.'),
+        ('docs/notion-guide.html', 'docs'),
         # Note: version_info.txt is a build-time input (EXE version= below), not a runtime asset.
-        # Note: user manual (Chinese filename) is excluded to avoid encoding issues on non-CJK build hosts.
     ],
     hiddenimports=[
         'yaml',          # PyYAML -- imported inside function body, may not be auto-detected
@@ -54,6 +56,14 @@ a = Analysis(
         'eye_care.qt_quick.apps_bridge',
         'eye_care.qt_quick.sites_bridge',
         'eye_care.qt_quick.update_bridge',
+        'eye_care.qt_quick.notion_bridge',
+        'eye_care.services.notion_sync',
+        'eye_care.services.notion_client',
+        'eye_care.services.notion_credentials',
+        'eye_care.services.device_identity',
+        'eye_care.qt_quick.appearance',
+        'eye_care.services.ai_export',
+        'win32crypt',
         'eye_care.update_service',
         'eye_care.qt_quick.calendar_bridge',
         'eye_care.qt_quick.notify_overlay',

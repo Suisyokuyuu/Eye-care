@@ -20,6 +20,7 @@ Window {
     title: "EyE Care"
 
     property string appVersion: ""
+    property bool trayAvailable: false
     signal toolbarAction(string name)   // settings/import/export/appSettings/blacklist/checkUpdate（预览用；运行时优先 shellHost）
     signal restRequested()              // 右栏「立刻休息」（预览用；运行时优先 shellHost.requestRest）
 
@@ -37,6 +38,7 @@ Window {
     function openAppSettings() { appSettingsPage.open = true }
     function openBlacklist() { blacklistPage.open = true }
     function openUpdate() { updatePage.open = true }
+    function openNotionSync() { notionSyncPage.open = true }
 
     // 关闭主窗口：按设置里的 close_action 决定（ask→弹确认 / minimize→最小化 / quit→退出）
     function requestClose() {
@@ -68,7 +70,12 @@ Window {
     }
     // 最小化=收进托盘：用 hide() 而非 showMinimized()，否则任务栏仍残留 EyE Care 按钮
     // （用户反馈：关闭→最小化后任务栏没同步关掉）。从托盘点「显示主界面」再 show() 唤回。
-    function minimizeWithFade() { root._fadeOutThen(function(){ root.hide(); }); }
+    function minimizeWithFade() {
+        root._fadeOutThen(function() {
+            if (root.trayAvailable) root.hide();
+            else root.showMinimized();
+        });
+    }
     function quitWithFade() { root._fadeOutThen(function(){ root.fireQuit(); }); }
 
     // 还原显示时复位透明度（托盘/任务栏唤回后不能停在透明态），并轻微淡入
@@ -93,19 +100,42 @@ Window {
     property string hlKey: ""
 
     // 背景：渐变蓝 + 顶部蓝辉光 + 星空（复刻 web body 背景）
-    AppBackground { anchors.fill: parent }
+    AppBackground {
+        id: appBackdrop; anchors.fill: parent
+        imageUrl: settingsBridge && settingsBridge.config ? settingsBridge.config.background_image_url || "" : ""
+        dimAmount: settingsBridge && settingsBridge.config ? settingsBridge.config.background_dim / 100 : 0.35
+        blurAmount: settingsBridge && settingsBridge.config ? settingsBridge.config.background_blur : 0
+    }
+    readonly property var glassBackdrop: appBackdrop.custom ? appBackdrop : null
+    readonly property real glassOpacity: settingsBridge && settingsBridge.config ? settingsBridge.config.panel_opacity / 100 : 0.68
+
+    // One continuous material for both rows: no doubled border or blur seam.
+    GlassSurface {
+        objectName: "headerSurface"
+        anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+        height: 88
+        backdrop: root.glassBackdrop; tintOpacity: 0.60
+        radius: root.visibility === Window.Maximized ? 0 : 12
+        gradient: null; color: "#990B1120"; border.color: "#14ffffff"
+        Rectangle {
+            x: 1; y: 1; width: parent.width - 2; height: 43
+            radius: parent.radius > 0 ? parent.radius - 1 : 0
+            gradient: Gradient {
+                GradientStop { position: 0; color: "#4d000000" }
+                GradientStop { position: 0.68; color: "#38000000" }
+                GradientStop { position: 1; color: "#00000000" }
+            }
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
         // ── 自定义标题栏（h36，可拖拽）──
-        Rectangle {
+        Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 36
-            color: "#b30B1120"      // dark-300 半透明，让星空透出（整条顶栏也有星空）
-            // 底边
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#1affffff" }
 
             // 拖拽区（铺底，按钮在其上且自带 MouseArea 不穿透）
             MouseArea {
@@ -156,21 +186,20 @@ Window {
         }
 
         // ── 工具栏（设置/导入/导出/应用设置/黑名单/检查更新）──
-        Rectangle {
+        Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 52
-            color: "#730B1120"     // dark-300/~45% 半透明，工具栏透出星空
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0dffffff" }
             Row {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left; anchors.leftMargin: 12
                 spacing: 4
                 ToolBtn { id: tbSettings;    icon: "cog";      label: "设置";     onClicked: settingsPage.open = true }
-                ToolBtn { id: tbImport;      icon: "download"; label: "导入";     onClicked: { choicePage.mode = "import"; choicePage.title = "请选择导入类型"; choicePage.label1 = "导入数据"; choicePage.label2 = "导入设置"; choicePage.open = true } }
-                ToolBtn { id: tbExport;      icon: "upload";   label: "导出";     onClicked: { choicePage.mode = "export"; choicePage.title = "请选择导出类型"; choicePage.label1 = "导出数据"; choicePage.label2 = "导出设置"; choicePage.open = true } }
+                ToolBtn { id: tbImport;      icon: "download"; label: "导入";     onClicked: { choicePage.mode = "import"; choicePage.title = "请选择导入类型"; choicePage.label1 = "导入数据"; choicePage.label2 = "导入设置"; choicePage.label3 = ""; choicePage.open = true } }
+                ToolBtn { id: tbExport;      icon: "upload";   label: "导出";     onClicked: { choicePage.mode = "export"; choicePage.title = "请选择导出类型"; choicePage.label1 = "导出数据"; choicePage.label2 = "导出设置"; choicePage.label3 = ""; choicePage.open = true } }
                 ToolBtn { id: tbAppSettings; icon: "grid";     label: "应用设置"; onClicked: appSettingsPage.open = true }
                 ToolBtn { id: tbBlacklist;   icon: "ban";      label: "黑名单";   onClicked: blacklistPage.open = true }
                 ToolBtn { icon: "refresh";   label: "检查更新"; onClicked: updatePage.open = true }
+                ToolBtn { id: tbSync; icon: "upload"; label: "数据同步"; onClicked: notionSyncPage.open = true }
             }
         }
 
@@ -186,6 +215,7 @@ Window {
                 id: leftPanelItem
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 110
                 bridge: leftPanelBridge
+                backdrop: root.glassBackdrop; tintOpacity: root.glassOpacity
                 highlightKey: root.hlKey
                 onHighlight: function(key) { root.hlKey = key; }
                 onPeriodSelected: function(period) { rightPanelBridge.setPeriod(period); }
@@ -204,6 +234,7 @@ Window {
                 id: rightPanelItem
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 100
                 bridge: rightPanelBridge
+                backdrop: root.glassBackdrop; tintOpacity: root.glassOpacity
                 highlightKey: root.hlKey
                 onHighlight: function(key) { root.hlKey = key; }
                 onRestRequested: root.fireRest()
@@ -268,12 +299,19 @@ Window {
     }
 
     // ── 导入/导出类型选择（无 bridge；选择后 toolbarAction 通知 host 执行实际文件 IO）──
+    NotionSyncPage {
+        id: notionSyncPage
+        bridge: typeof notionBridge !== "undefined" ? notionBridge : null
+        onClosed: open = false
+    }
+
     ChoicePage {
         id: choicePage
         anchors.fill: parent
         property string mode: "export"      // import | export
         onClosed: open = false
         onChosen: function(which) {
+            if (mode === "export" && which === 3) { notionSyncPage.open = true; return; }
             // mode+which → 动作名（与 web desktopHostCall 对齐）
             var act = mode === "export"
                 ? (which === 1 ? "exportAll" : "exportSettings")

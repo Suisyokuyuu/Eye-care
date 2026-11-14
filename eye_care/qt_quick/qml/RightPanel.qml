@@ -10,6 +10,8 @@ Item {
     id: panel
 
     required property var bridge // 宿主注入 RightPanelBridge（required：子绑定求值前已就位，避免瞬时 null）
+    property var backdrop: null
+    property real tintOpacity: 0.68
     signal restRequested()       // 「立刻休息」点击 → 宿主接 showRestOverlay
 
     property string highlightKey: ""    // 外部联动高亮（app 名；宿主把左右栏串起来）
@@ -39,18 +41,10 @@ Item {
         spacing: 12
 
         // ══ 上：屏幕时间统计 ══
-        Rectangle {
+        GlassSurface {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: 8
-            border.color: "#1affffff"; border.width: 1
-            gradient: Gradient {                 // 与左栏统一：顶部偏亮蓝灰、向下渐深（避免右栏顶部发黑、左右不一致）
-                orientation: Gradient.Vertical
-                GradientStop { position: 0.00; color: "#26344b" }
-                GradientStop { position: 0.25; color: "#1c2637" }
-                GradientStop { position: 0.55; color: "#121a28" }
-                GradientStop { position: 1.00; color: "#141e2d" }
-            }
+            backdrop: panel.backdrop; tintOpacity: panel.tintOpacity
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 16
@@ -114,18 +108,10 @@ Item {
         }
 
         // ══ 下：仪表卡片 + 立刻休息 ══
-        Rectangle {
+        GlassSurface {
             Layout.fillWidth: true
             Layout.preferredHeight: dashCol.implicitHeight + 24
-            radius: 8
-            border.color: "#1affffff"; border.width: 1
-            gradient: Gradient {                 // 与左栏统一
-                orientation: Gradient.Vertical
-                GradientStop { position: 0.00; color: "#26344b" }
-                GradientStop { position: 0.25; color: "#1c2637" }
-                GradientStop { position: 0.55; color: "#121a28" }
-                GradientStop { position: 1.00; color: "#141e2d" }
-            }
+            backdrop: panel.backdrop; tintOpacity: panel.tintOpacity
             ColumnLayout {
                 id: dashCol
                 anchors.fill: parent

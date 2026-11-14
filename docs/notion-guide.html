@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Notion 配置手册 · EyE Care</title>
+  <style>
+    :root { color-scheme: light; --ink:#172e42; --muted:#536979; --line:#dbe5eb; --blue:#17688c; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; scroll-padding-top:24px; }
+    body { margin:0; background:#f3f7f9; color:var(--ink); font:16px/1.8 "Segoe UI","Microsoft YaHei",sans-serif; }
+    a { color:var(--blue); text-underline-offset:4px; overflow-wrap:anywhere; }
+    a:focus-visible, summary:focus-visible { outline:3px solid #17688c; outline-offset:4px; }
+    header { background:linear-gradient(120deg,#102c40,#205772); color:#fff; padding:60px max(24px,calc((100vw - 1040px)/2)); }
+    .brand { font-size:13px; letter-spacing:.16em; color:#bbdae8; }
+    h1 { font-size:clamp(30px,5vw,44px); line-height:1.25; margin:14px 0; }
+    header p { max-width:650px; margin:0; color:#d4e7ef; }
+    .layout { max-width:1088px; padding:32px 24px 64px; margin:auto; display:grid; grid-template-columns:190px minmax(0,1fr); gap:32px; }
+    nav { position:sticky; top:24px; align-self:start; font-size:14px; }
+    nav strong { display:block; margin-bottom:10px; }
+    nav a { display:block; padding:7px 0; text-decoration:none; color:var(--muted); }
+    main { min-width:0; }
+    section { padding:28px; background:#fff; border:1px solid var(--line); border-radius:16px; margin-bottom:20px; }
+    h2 { font-size:23px; line-height:1.5; margin:0 0 14px; }
+    h3 { font-size:17px; margin:22px 0 8px; }
+    p { margin:10px 0; }
+    ol,ul { padding-left:24px; margin:12px 0; }
+    li+li { margin-top:7px; }
+    .step { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; background:#e8f3f8; color:var(--blue); border-radius:50%; font-size:16px; margin-right:10px; }
+    .note { padding:14px 17px; background:#eef6fa; border-left:3px solid #7cb4cb; border-radius:0 8px 8px 0; color:#33546a; }
+    .flow { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:14px 0; }
+    .flow span { background:#eef6fa; padding:8px 12px; border-radius:8px; }
+    .flow b { color:#718c9c; }
+    dl { margin:14px 0 0; }
+    dt { font-weight:600; margin-top:14px; }
+    dd { margin:3px 0 0; color:var(--muted); }
+    details { border-top:1px solid var(--line); padding:13px 0; }
+    summary { cursor:pointer; font-weight:600; }
+    details p { color:var(--muted); }
+    .small,footer { color:var(--muted); font-size:14px; }
+    footer { padding:5px 4px; }
+    @media(max-width:760px) { header { padding:36px 22px; } .layout { display:block; padding:20px 16px 40px; } nav { position:static; margin-bottom:20px; } nav a { display:inline-block; margin-right:14px; } section { padding:22px; } }
+    @media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+    @media print { body { background:white; } header { background:white; color:var(--ink); padding:0 0 20px; } header p,.brand { color:var(--muted); } .layout { display:block; padding:0; } nav { display:none; } section { break-inside:avoid; } details { break-inside:avoid; } }
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand">EyE Care / 使用指南</div>
+  <h1>把每天的用眼汇总<br>放进自己的 Notion</h1>
+  <p>第一次先手动同步，确认数据正常后，再开启自动同步。你只需要 EyE Care、自己的 Notion 账号和一个专用页面。</p>
+</header>
+<div class="layout">
+  <nav aria-label="配置步骤">
+    <strong>跟着做就好</strong>
+    <a href="#prepare">准备与隐私</a>
+    <a href="#connection">1 · 创建 API 连接</a>
+    <a href="#permission">2 · 授权专用页面</a>
+    <a href="#sync">3 · 填写并首次同步</a>
+    <a href="#views">4 · 表格与日历</a>
+    <a href="#schedule">5 · 自动与多设备</a>
+    <a href="#ai">6 · 让 AI 读取</a>
+    <a href="#faq">常见问题</a>
+  </nav>
+  <main>
+    <section id="prepare">
+      <h2>开始前，先了解这三件事</h2>
+      <ul>
+        <li><strong>数据在你自己的空间里。</strong>本手册不含他人的页面链接、密钥或真实统计，也没有预设公共上传位置。</li>
+        <li><strong>上传的是每日汇总。</strong>包括总时长、应用与分类汇总、休息次数；不上传每分钟活动、具体休息时间或完整浏览网址。网站域名汇总默认关闭，可按需勾选。</li>
+        <li><strong>不需要部署服务器。</strong>这里使用 Notion API；不需要 Workers API。免费工作区也有 API 额度，但仍受工作区内容额度与请求限制约束，详见 <a href="https://developers.notion.com/reference/request-limits">Notion 官方额度说明</a>。</li>
+      </ul>
+      <div class="flow" aria-label="数据流向"><span>本机每日汇总</span><b aria-hidden="true">→</b><span>你的 Notion 数据仓库</span><b aria-hidden="true">→</b><span>表格 / 日历 / AI</span></div>
+      <p class="note">API 密钥只粘贴到 EyE Care 的密钥输入框。不要贴进页面正文、聊天、公开截图或 GitHub。此 HTML 不收集密钥，也不自动联网加载内容。</p>
+    </section>
+    <section id="connection">
+      <h2><span class="step">1</span>创建自己的 API 连接</h2>
+      <ol>
+        <li>登录 Notion，打开 <a href="https://app.notion.com/developers/connections">Notion 开发者门户的连接管理</a>，创建连接。</li>
+        <li>选择自己的工作区，创建 <strong>Internal / 内部连接</strong>，名称可填“EyE Care 同步”。通常需要该工作区的所有者权限。</li>
+        <li>在配置中允许<strong>读取内容、插入内容、更新内容</strong>。此功能不需要读取用户邮箱等信息。</li>
+        <li>复制连接的 <strong>API token / 内部连接密钥</strong>，稍后填进软件。无需创建 OAuth 应用，也无需填写回调网址。</li>
+      </ol>
+      <p class="small">Notion 菜单可能显示“连接”或“Integration”。如果你看到的是 Workers 配置，请返回普通的内部连接；本功能不使用 Worker。</p>
+    </section>
+    <section id="permission">
+      <h2><span class="step">2</span>新建专用页面并授权</h2>
+      <ol>
+        <li>在同一个工作区新建普通空白页，例如“我的用眼统计”。先不要手工创建数据库字段。</li>
+        <li>打开页面右上角 <strong>••• → 连接 / Add connections</strong>，添加刚创建的“EyE Care 同步”。无需将页面发布到互联网。</li>
+        <li>复制这个页面的链接，留到下一步使用。不要复制工作区首页、单条记录或仅某个数据源的链接。</li>
+      </ol>
+      <p class="note">有密钥还不够：连接必须被授权访问目标页面。请只授权专用统计页及其子内容。</p>
+    </section>
+    <section id="sync">
+      <h2><span class="step">3</span>在 EyE Care 中首次同步</h2>
+      <p>打开主界面工具栏的<strong>“数据同步”</strong>，按下面填写：</p>
+      <dl>
+        <dt>Notion 数据仓库链接</dt><dd>第一次粘贴上一步的空白页链接。软件会在该页下创建“EyE Care · 每日数据仓库（正式版）”，以后沿用此链接即可。也可改填软件创建的仓库链接；不要填写自己随意建的表格。</dd>
+        <dt>展示页链接（可选）</dt><dd>先填同一个页面链接。“打开统计页”会打开它；留空则打开填写的仓库位置。此项只决定浏览入口，不改变上传目的地。</dd>
+        <dt>Notion API 密钥</dt><dd>粘贴第 1 步复制的内部连接密钥。保存后输入框清空属于正常现象；软件会显示已保存状态。</dd>
+        <dt>设备名称</dt><dd>起一个容易识别的名字，例如“书房电脑”。不同电脑建议使用不同名称。</dd>
+        <dt>日期范围</dt><dd>第一次建议选“今天”。确认正常后可改成最近 7 天或最近 30 天。</dd>
+      </dl>
+      <p>点击<strong>“保存设置”</strong>，再点<strong>“立即同步”</strong>。用过软件、有统计记录的日期才会新建记录；没有数据时，仓库可能仍是空的。</p>
+      <p>完成后点<strong>“打开统计页”</strong>，在 Notion 页面中打开生成的仓库。看到日期、总时长和设备就说明配置成功。再次同步同设备同一天，会更新原记录。</p>
+    </section>
+    <section id="views">
+      <h2><span class="step">4</span>让表格和日历直接展示在页面里</h2>
+      <p>仓库保存实际数据，视图只是它的展示方式。软件负责创建仓库和同步记录；下面的展示视图需在你的 Notion 中设置一次。</p>
+      <ol>
+        <li>回到“我的用眼统计”页面，在空白处输入 <strong>/linked</strong>，选择“数据库关联视图 / Linked view of database”，选刚生成的每日数据仓库。</li>
+        <li>将视图设为<strong>表格</strong>。建议只显示“记录、日期、总时长、休息完成”，并按日期倒序；其他技术字段隐藏即可，不要删除。需要区分电脑时显示或筛选“设备”。</li>
+        <li>在该关联数据库的视图菜单中再添加一个<strong>日历视图</strong>，日期字段选择“日期”；在卡片属性中显示“总时长、设备”。</li>
+        <li>可为两个视图添加“数据类型 = 正式数据”筛选。它们读取同一份仓库，后续同步会自动反映在视图中。</li>
+      </ol>
+      <p class="small">如果希望两种视图同时出现在页面上，而不是切换标签，再插入一次相同仓库的关联视图，将第二块设成日历。切勿新建第二个独立仓库来展示同一份数据。</p>
+    </section>
+    <section id="schedule">
+      <h2><span class="step">5</span>按自己的习惯开启同步</h2>
+      <dl>
+        <dt>手动同步</dt><dd>需要时点“立即同步”；软件只处理当前选择的日期范围。</dd>
+        <dt>启动后同步一次</dt><dd>每次启动约 15 秒后同步一次。一直放在托盘里不会每 15 秒重复同步。</dd>
+        <dt>每天定时同步</dt><dd>按电脑本地时间每天一次，需软件保持运行。首次开启从下一个设定时刻开始；休眠错过后恢复运行可补一次。失败时可手动重试。</dd>
+        <dt>多台设备</dt><dd>每台电脑分别填写自己的密钥、设备名称和同一仓库链接。软件按“设备身份 + 日期”更新，各自保留记录，不会用设备名称覆盖另一台电脑。</dd>
+      </dl>
+      <p class="note">同一天的不同设备会有多条记录。多设备同时使用或复制历史数据会造成时间重叠，因此不能把各设备时长直接当作去重后的个人用眼时间。</p>
+    </section>
+    <section id="ai">
+      <h2><span class="step">6</span>让 AI 查看统计</h2>
+      <p>在你使用的 AI 应用中连接 Notion，并授权自己的统计页和数据仓库。同步完成后，告诉 AI 统计页名称、日期范围和需要分析的内容即可；无需把 Notion API 密钥发给 AI。</p>
+      <p>如果不想使用 Notion，也可以在“数据同步”选择日期范围，点击<strong>“导出 JSON”</strong>，再把导出的每日汇总文件交给 AI。导出前请确认内容是否适合分享。</p>
+    </section>
+    <section id="faq">
+      <h2>遇到问题时</h2>
+      <details open><summary>找不到页面 / 404 / 没有权限</summary><p>检查工作区是否相同，并重新在目标页面的“连接”中添加内部连接。填写正确的专用页或软件创建的仓库链接；仅有页面网址并不代表 API 已获授权。</p></details>
+      <details open><summary>密钥无效 / 401</summary><p>重新从连接配置复制完整密钥，粘贴到软件并保存。密钥被撤销或更换后，也需要重新填写。</p></details>
+      <details open><summary>统计库字段不匹配</summary><p>使用软件自动生成的每日数据仓库，不要删除或改动其字段类型。如果误填了其他表格，改回专用普通页链接，再同步。</p></details>
+      <details open><summary>点“打开统计页”没有浏览器</summary><p>点击“复制链接”后手动粘贴到浏览器；检查 Windows 是否已设置默认浏览器，并检查当前展示页链接。</p></details>
+      <details open><summary>同步后没有新记录</summary><p>先确认所选日期实际有本地统计。重复同步会更新原记录；内容相同则跳过，不会每点一次都新增一行。</p></details>
+      <details open><summary>额度不足、请求过快或 Notion 繁忙</summary><p>不要连续点击。按错误提示稍后重试；工作区内容额度用尽时需先在 Notion 中处理。也可先导出 JSON。</p></details>
+      <details open><summary>换电脑后需要做什么？</summary><p>在新电脑重新填写密钥；Windows 加密的凭据不能直接跨用户、跨电脑使用。软件会区分安装位置的设备身份，避免两个安装互相覆盖。</p></details>
+    </section>
+    <footer>EyE Care · 本地配置手册<br>官方参考：<a href="https://developers.notion.com/guides/authorization/overview">创建连接与页面授权</a> · <a href="https://developers.notion.com/reference/request-limits">请求与工作区限制</a>。Notion 菜单名称可能随版本调整。</footer>
+  </main>
+</div>
+</body>
+</html>

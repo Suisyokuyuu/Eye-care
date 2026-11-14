@@ -84,6 +84,8 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
     from eye_care.qt_quick.update_bridge import UpdateBridge, build_update_io
     from eye_care.qt_quick.calendar_bridge import CalendarBridge, build_calendar_io
     from eye_care.qt_quick.sites_bridge import SitesBridge, build_sites_io
+    from eye_care.qt_quick.notion_bridge import NotionBridge
+    from eye_care.services.notion_sync import NotionSyncService
 
     if today is None:
         from datetime import date as _date
@@ -114,6 +116,7 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
 
     u_checker, u_opener = build_update_io(controller, lg)
     update = UpdateBridge(u_checker, u_opener)
+    notion = NotionBridge(NotionSyncService(controller, persist=persist))
 
     calendar = CalendarBridge(build_calendar_io(controller, lg), today=today)
 
@@ -128,6 +131,7 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
         "sitesBridge": sites,
         "updateBridge": update,
         "calendarBridge": calendar,
+        "notionBridge": notion,
         # FaviconService 非 QObject、不是 contextProperty（不在 CONTEXT_PROPERTY_NAMES）：
         # 放进 dict 仅为防 GC + 供退出时 stop()。runtime_shell 循环 setContextProperty 只遍历
         # CONTEXT_PROPERTY_NAMES，不会把它当 QObject 传给 QML。
@@ -138,5 +142,5 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
 # AppShell.qml 需要的 contextProperty 名（runtime_shell 接线时核对用；provider 不是 contextProperty）。
 CONTEXT_PROPERTY_NAMES = (
     "leftPanelBridge", "rightPanelBridge", "settingsBridge", "blacklistBridge",
-    "appsBridge", "sitesBridge", "updateBridge", "calendarBridge",
+    "appsBridge", "sitesBridge", "updateBridge", "calendarBridge", "notionBridge",
 )

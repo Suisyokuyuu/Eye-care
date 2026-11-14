@@ -17,6 +17,7 @@ Item {
     property string title: "请选择"
     property string label1: "按钮1"
     property string label2: "按钮2"
+    property string label3: ""
     signal closed()
     signal chosen(int which)        // 1=主按钮 2=次按钮
 
@@ -54,7 +55,7 @@ Item {
             }
 
             RowLayout {
-                Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24; spacing: 12
+                Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: page.label3 !== "" ? 12 : 24; spacing: 12
                 Rectangle {
                     Layout.fillWidth: true; height: 40; radius: 8; color: b1Ma.containsMouse ? "#1E40AF" : "#3B82F6"
                     Text { anchors.centerIn: parent; text: page.label1; color: "#fff"; font.pixelSize: 14; font.weight: Font.Medium }
@@ -65,6 +66,12 @@ Item {
                     Text { anchors.centerIn: parent; text: page.label2; color: "#fff"; font.pixelSize: 14; font.weight: Font.Medium }
                     MouseArea { id: b2Ma; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { page.chosen(2); page.closed(); } }
                 }
+            }
+            SettingsPage.FooterBtn {
+                visible: page.label3 !== ""
+                Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24
+                text: page.label3; primary: false
+                onClicked: { page.chosen(3); page.closed(); }
             }
         }
     }

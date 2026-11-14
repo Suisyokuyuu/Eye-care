@@ -24,6 +24,21 @@ class WinEffects:
         self._alpha_callsite_seen: set = set()  # (hwnd, where) 仅首次打印 CALLSITE，避免卡顿
         self._acrylic_applied_hwnds: set = set()  # 已成功 apply 过的 hwnd，rest_fade_in_done 时不再重复 apply，避免 DWM 重建材质导致裂线
 
+    def round_main_window(self, hwnd: int) -> bool:
+        """Opt a custom opaque frame into Windows 11's native corner policy."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            api = ctypes.WinDLL("dwmapi").DwmSetWindowAttribute
+            api.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+            api.restype = ctypes.c_long
+            preference = ctypes.c_int(2)  # DWMWCP_ROUND; system keeps maximized windows square.
+            ok = api(int(hwnd), 33, ctypes.byref(preference), ctypes.sizeof(preference)) == 0
+            self._log.info("qt.main_window.rounded_corners requested=%s", ok)
+            return ok
+        except (OSError, AttributeError):
+            return False
+
     def enable_acrylic(self, hwnd: int, tint_color: int = 0xBB101826, blur: bool = True, where: str = "", quiet: bool = False) -> bool:
         try:
             hwnd_int = int(hwnd)

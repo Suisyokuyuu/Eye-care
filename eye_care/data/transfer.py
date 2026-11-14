@@ -3,11 +3,13 @@ import logging
 import re
 import uuid
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .repository import Repository
+from .json_wal_repo import _merge_minute_row_into
 
 log = logging.getLogger(__name__)
 
@@ -75,12 +77,14 @@ def _read_jsonl(p: Path) -> List[Dict[str, Any]]:
     if not p.exists():
         return []
     out: List[Dict[str, Any]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            row = json.loads(line)
+            if isinstance(row, dict):
+                out.append(row)
         except Exception:
             # ignore bad lines (but keep import/export robust)
             continue
@@ -102,14 +106,14 @@ def _to_nonneg_int(v: Any) -> int:
         return 0
 
 
-def _normalize_minute_row(rec: Dict[str, Any], fallback_day: str) -> Optional[Dict[str, Any]]:
+def _normalize_minute_row(rec: Dict[str, Any], fallback_day: str, field: str = "apps") -> Optional[Dict[str, Any]]:
     if not isinstance(rec, dict):
         return None
     minute_start = str(rec.get("minute_start_utc", "") or "").strip()
     if not minute_start:
         return None
     local_date = str(rec.get("local_date", "") or fallback_day).strip() or fallback_day
-    raw_apps = rec.get("apps") if isinstance(rec.get("apps"), dict) else {}
+    raw_apps = rec.get(field) if isinstance(rec.get(field), dict) else {}
     apps: Dict[str, int] = {}
     for k, v in raw_apps.items():
         app = str(k or "").strip()
@@ -117,43 +121,24 @@ def _normalize_minute_row(rec: Dict[str, Any], fallback_day: str) -> Optional[Di
             continue
         apps[app] = _to_nonneg_int(v)
     return {
-        "_schema": "minute@1",
+        "_schema": "domain_minute@1" if field == "domains" else "minute@1",
         "minute_start_utc": minute_start,
         "local_date": local_date,
-        "apps": apps,
+        field: apps,
     }
 
 
-def _merge_minute_rows(local_rows: List[Dict[str, Any]], in_rows: List[Dict[str, Any]], day: str) -> List[Dict[str, Any]]:
-    local_cnt: Dict[Tuple[str, str, str], int] = {}
-    in_cnt: Dict[Tuple[str, str, str], int] = {}
-    sample: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-
-    for rec in local_rows:
-        n = _normalize_minute_row(rec, day)
-        if n is None:
-            continue
-        apps_sig = json.dumps(n.get("apps") or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        key = (str(n["local_date"]), str(n["minute_start_utc"]), apps_sig)
-        local_cnt[key] = int(local_cnt.get(key, 0)) + 1
-        sample[key] = n
-
-    for rec in in_rows:
-        n = _normalize_minute_row(rec, day)
-        if n is None:
-            continue
-        apps_sig = json.dumps(n.get("apps") or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        key = (str(n["local_date"]), str(n["minute_start_utc"]), apps_sig)
-        in_cnt[key] = int(in_cnt.get(key, 0)) + 1
-        sample[key] = n
-
-    out: List[Dict[str, Any]] = []
-    for key in sorted(set(local_cnt.keys()) | set(in_cnt.keys()), key=lambda x: (x[0], x[1], x[2])):
-        keep_n = max(int(local_cnt.get(key, 0)), int(in_cnt.get(key, 0)))
-        row = sample[key]
-        for _ in range(keep_n):
-            out.append(row)
-    return out
+def _merge_minute_rows(local_rows: List[Dict[str, Any]], in_rows: List[Dict[str, Any]], day: str,
+                       field: str = "apps") -> List[Dict[str, Any]]:
+    # A minute row is a cumulative snapshot. Importing an older/newer backup
+    # must agree with the repository's checkpoint, including before restart.
+    merged = {}
+    schema = "domain_minute@1" if field == "domains" else "minute@1"
+    for rec in local_rows + in_rows:
+        normalized = _normalize_minute_row(rec, day, field)
+        if normalized is not None:
+            _merge_minute_row_into(merged, normalized, field=field, schema=schema)
+    return [row for _, row in sorted(merged.items())]
 
 
 def _normalize_event_row(rec: Dict[str, Any], fallback_day: str) -> Optional[Dict[str, Any]]:
@@ -281,12 +266,14 @@ def _events_file(data_dir: Path, day: str) -> Path:
 def _read_jsonl_from_bytes(data: bytes) -> List[Dict[str, Any]]:
     """Parse jsonl from raw bytes (e.g. zip entry)."""
     out: List[Dict[str, Any]] = []
-    for line in data.decode("utf-8").splitlines():
+    for line in data.decode("utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            row = json.loads(line)
+            if isinstance(row, dict):
+                out.append(row)
         except Exception:
             continue
     return out
@@ -294,10 +281,18 @@ def _read_jsonl_from_bytes(data: bytes) -> List[Dict[str, Any]]:
 
 def _local_days(data_dir: Path) -> List[str]:
     days = set()
-    for p in (data_dir / "minute_usage").glob("minute-*.jsonl"):
-        day = p.stem.replace("minute-", "")
-        if len(day) == 10:
-            days.add(day)
+    for directory, pattern, prefix in (
+        ("minute_usage", "minute-*.jsonl", "minute-"),
+        ("minute_domains", "domains-*.jsonl", "domains-"),
+        ("events", "events-*.jsonl", "events-"),
+        ("wal", "minutes-*.jsonl", "minutes-"),
+        ("wal", "domains-*.jsonl", "domains-"),
+        ("wal", "events-*.jsonl", "events-"),
+    ):
+        for p in (data_dir / directory).glob(pattern):
+            day = p.stem[len(prefix):]
+            if _validate_day(day):
+                days.add(day)
     return sorted(days)
 
 
@@ -321,8 +316,13 @@ def _save_import_log(data_dir: Path, obj: Dict[str, Any]) -> None:
     p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def export_all(data_dir: Path, out_path: Path) -> Dict[str, Any]:
-    """Export local main data as ZIP: minute_usage/*.jsonl + events/*.jsonl（与本地存储格式一致，不展开成大 JSON）."""
+def export_all(data_dir: Path, out_path: Path, repo: Optional[Repository] = None) -> Dict[str, Any]:
+    """Back up apps, sites and events. Pass the live repo to include RAM data.
+
+    The snapshot is copied under the repository lock; writing the ZIP does not
+    pause sampling or finalize/split the active minute. Offline callers include
+    main files and WAL, but cannot see another process's in-memory accumulator.
+    """
     data_dir = Path(data_dir)
     out_path = Path(out_path)
     device_id = get_or_create_device_id(data_dir)
@@ -330,73 +330,57 @@ def export_all(data_dir: Path, out_path: Path) -> Dict[str, Any]:
     export_seq = _next_export_seq(data_dir)
     export_time = _utc_iso_now()
 
-    days = _local_days(data_dir)
+    if repo is not None:
+        snapshot = repo.export_snapshot()
+    else:
+        snapshot = {"minute_usage": {}, "minute_domains": {}, "events": {}}
+        for day in _local_days(data_dir):
+            snapshot["minute_usage"][day] = _merge_minute_rows(
+                _read_jsonl(_minute_file(data_dir, day)),
+                _read_jsonl(data_dir / "wal" / f"minutes-{day}.jsonl"), day)
+            snapshot["minute_domains"][day] = _merge_minute_rows(
+                _read_jsonl(data_dir / "minute_domains" / f"domains-{day}.jsonl"),
+                _read_jsonl(data_dir / "wal" / f"domains-{day}.jsonl"), day, "domains")
+            snapshot["events"][day] = _merge_event_rows(
+                _read_jsonl(_events_file(data_dir, day)),
+                _read_jsonl(data_dir / "wal" / f"events-{day}.jsonl"), day)
+    days = sorted(set().union(*(set(rows) for rows in snapshot.values())))
     day_stats: List[Dict[str, Any]] = []
     total_minutes = 0
     total_events = 0
+    total_domains = 0
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        meta = {
-            "schema": "eye_care_export@4",
-            "export_id": export_id,
-            "device_id": device_id,
-            "export_seq": export_seq,
-            "export_time": export_time,
-            "days": days,
-        }
-        zf.writestr("_meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
-
-        for day in days:
-            m_path = _minute_file(data_dir, day)
-            e_path = _events_file(data_dir, day)
-            m_raw = m_path.read_bytes() if m_path.exists() else b""
-            e_raw = e_path.read_bytes() if e_path.exists() else b""
-
-            # 导出保护: 逐行 clamp minute apps 值，容错处理（无效行原样保留）
-            def _clamp_minute_line(line: bytes) -> bytes:
-                try:
-                    # utf-8-sig 兼容 BOM
-                    rec = json.loads(line.decode("utf-8-sig"))
-                    if "apps" in rec and isinstance(rec["apps"], dict):
-                        rec["apps"] = {k: max(0, int(v)) for k, v in rec["apps"].items()}
-                    return (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
-                except Exception:
-                    # 容错: 无效行原样保留，确保换行符不丢失避免行粘连
-                    return line if line.endswith(b"\n") else line + b"\n"
-
-            # 导出保护: 逐行 clamp event seconds 值
-            def _clamp_event_line(line: bytes) -> bytes:
-                try:
-                    rec = json.loads(line.decode("utf-8-sig"))
-                    if "seconds" in rec and isinstance(rec["seconds"], (int, float)):
-                        rec["seconds"] = max(0, int(rec["seconds"]))
-                    return (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
-                except Exception:
-                    # 容错: 无效行原样保留，确保换行符不丢失避免行粘连
-                    return line if line.endswith(b"\n") else line + b"\n"
-
-            # 处理 minute 文件
-            m_lines = []
-            for line in m_raw.splitlines():
-                if line.strip():
-                    m_lines.append(_clamp_minute_line(line))
-            m_clamped = b"".join(m_lines)
-            zf.writestr(f"minute_usage/minute-{day}.jsonl", m_clamped)
-
-            # 处理 events 文件
-            e_lines = []
-            for line in e_raw.splitlines():
-                if line.strip():
-                    e_lines.append(_clamp_event_line(line))
-            e_clamped = b"".join(e_lines)
-            zf.writestr(f"events/events-{day}.jsonl", e_clamped)
-
-            m_lines_count = len(m_lines)
-            e_lines_count = len(e_lines)
-            total_minutes += m_lines_count
-            total_events += e_lines_count
-            day_stats.append({"day": day, "minutes": m_lines_count, "events": e_lines_count})
+    temporary_path = out_path.with_name(out_path.name + f".{export_id}.tmp")
+    try:
+        with zipfile.ZipFile(temporary_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            meta = {
+                "schema": "eye_care_export@5", "export_id": export_id,
+                "device_id": device_id, "export_seq": export_seq,
+                "export_time": export_time, "days": days,
+                "includes_domains": True,
+            }
+            zf.writestr("_meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+            for day in days:
+                minutes = _merge_minute_rows([], snapshot["minute_usage"].get(day, []), day)
+                domains = _merge_minute_rows([], snapshot["minute_domains"].get(day, []), day, "domains")
+                events = snapshot["events"].get(day, [])
+                for name, rows in (
+                    (f"minute_usage/minute-{day}.jsonl", minutes),
+                    (f"minute_domains/domains-{day}.jsonl", domains),
+                    (f"events/events-{day}.jsonl", events),
+                ):
+                    if name.startswith("minute_domains/") and not rows:
+                        continue
+                    text = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+                    zf.writestr(name, text)
+                total_minutes += len(minutes)
+                total_events += len(events)
+                total_domains += len(domains)
+                day_stats.append({"day": day, "minutes": len(minutes), "events": len(events), "domains": len(domains)})
+        temporary_path.replace(out_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
     log.info("export ok: export_id=%s seq=%s days=%s", export_id, export_seq, len(days))
     return {
@@ -404,6 +388,7 @@ def export_all(data_dir: Path, out_path: Path) -> Dict[str, Any]:
         "meta": meta,
         "total_minutes": total_minutes,
         "total_events": total_events,
+        "total_domain_minutes": total_domains,
         "days": len(day_stats),
         "day_stats": day_stats,
     }
@@ -422,7 +407,7 @@ def _zip_read(zf: zipfile.ZipFile, name: str) -> bytes:
 
 def _load_payload_from_zip(zip_path: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """从 ZIP 导出包读出 _meta 与 minute_usage/events（与本地格式一致）。返回 (payload, meta)。"""
-    payload: Dict[str, Any] = {"_meta": {}, "minute_usage": {}, "events": {}}
+    payload: Dict[str, Any] = {"_meta": {}, "minute_usage": {}, "minute_domains": {}, "events": {}}
     with zipfile.ZipFile(zip_path, "r") as zf:
         try:
             meta = json.loads(_zip_read(zf, "_meta.json").decode("utf-8"))
@@ -460,6 +445,12 @@ def _load_payload_from_zip(zip_path: Path) -> Tuple[Dict[str, Any], Dict[str, An
                 )
             except KeyError:
                 payload["events"][day] = []
+            try:
+                payload["minute_domains"][day] = _read_jsonl_from_bytes(
+                    _zip_read(zf, f"minute_domains/domains-{day}.jsonl"))
+            except KeyError:
+                if meta.get("includes_domains"):
+                    payload["minute_domains"][day] = []
     return payload, meta
 
 
@@ -469,6 +460,14 @@ def import_all(
     repo: Repository,
     conflict_policy: str = "merge_conflicts",
 ) -> Dict[str, Any]:
+    if conflict_policy not in ("merge_conflicts", "skip_conflicts", "overwrite_conflicts"):
+        raise ValueError(f"Unknown conflict policy: {conflict_policy}")
+    guard = getattr(repo, "transfer_guard", None)
+    with guard() if callable(guard) else nullcontext():
+        return _import_all_locked(data_dir, in_path, repo, conflict_policy)
+
+
+def _import_all_locked(data_dir: Path, in_path: Path, repo: Repository, conflict_policy: str) -> Dict[str, Any]:
     """Import export file (.zip or legacy .json).
 
     conflict_policy:
@@ -522,6 +521,7 @@ def import_all(
 
     minute_usage = (payload or {}).get("minute_usage") or {}
     events = (payload or {}).get("events") or {}
+    domains = (payload or {}).get("minute_domains") or {}
 
     applied_days: List[str] = []
     skipped_days: List[str] = []
@@ -530,7 +530,7 @@ def import_all(
     event_items = 0
     day_stats: List[Dict[str, Any]] = []
 
-    all_days_raw = sorted(set(minute_usage.keys()) | set(events.keys()))
+    all_days_raw = sorted(set(minute_usage.keys()) | set(events.keys()) | set(domains.keys()))
     for day in all_days_raw:
         # 路径穿越防护：正则校验 + resolve 边界校验
         if not _validate_day(str(day)):
@@ -543,19 +543,25 @@ def import_all(
         ev_rows = events.get(day) if isinstance(events, dict) else None
         rows = rows if isinstance(rows, list) else []
         ev_rows = ev_rows if isinstance(ev_rows, list) else []
+        domain_rows = domains.get(day) if isinstance(domains, dict) else None
+        domain_rows = domain_rows if isinstance(domain_rows, list) else []
+        # Old backups do not carry sites; do not erase existing site data.
+        has_domains = day in domains
 
         local_m_path = _minute_file(data_dir, day)
         local_e_path = _events_file(data_dir, day)
-        if not _path_under_data_dir(data_dir, local_m_path) or not _path_under_data_dir(data_dir, local_e_path):
+        local_d_path = data_dir / "minute_domains" / f"domains-{day}.jsonl"
+        if not all(_path_under_data_dir(data_dir, p) for p in (local_m_path, local_e_path, local_d_path)):
             log.warning("AUDIT transfer.import.rejected_path: day=%s path escapes data_dir, skipped", day)
             skipped_days.append(day)
             continue
 
-        local_exists = local_m_path.exists() or local_e_path.exists()
+        local_exists = local_m_path.exists() or local_e_path.exists() or local_d_path.exists()
 
         action = "applied"
         final_rows = rows
         final_ev_rows = ev_rows
+        final_domain_rows = _merge_minute_rows([], domain_rows, day, "domains")
 
         if local_exists:
             if conflict_policy == "overwrite_conflicts":
@@ -567,6 +573,7 @@ def import_all(
                 local_ev_rows = _read_jsonl(local_e_path)
                 final_rows = _merge_minute_rows(local_rows, rows, day)
                 final_ev_rows = _merge_event_rows(local_ev_rows, ev_rows, day)
+                final_domain_rows = _merge_minute_rows(_read_jsonl(local_d_path), domain_rows, day, "domains")
                 action = "merged"
             else:
                 skipped_days.append(day)
@@ -578,6 +585,8 @@ def import_all(
         minute_items += m_cnt
 
         _write_jsonl(local_e_path, final_ev_rows)
+        if has_domains and (final_domain_rows or local_d_path.exists()):
+            _write_jsonl(local_d_path, final_domain_rows)
         e_cnt = len(final_ev_rows)
         event_items += e_cnt
 
