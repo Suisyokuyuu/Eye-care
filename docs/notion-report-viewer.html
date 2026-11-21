@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>每日汇总 · 滚动浏览</title>
+<style>
+:root { color-scheme:light dark; --paper:#f9faf6; --ink:#283b35; --muted:#54685e; --line:#d2dcd2; --wash:#edf2ea }
+@media(prefers-color-scheme:dark){:root{--paper:#202823;--ink:#e8eee8;--muted:#b6c7bb;--line:#445449;--wash:#2a362f}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.6 system-ui,sans-serif;background:var(--paper);color:var(--ink)}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px}h1{margin:0;font-size:16px}label{cursor:pointer;position:relative;padding:3px 10px;color:var(--ink);background:var(--wash);border:1px solid var(--line);border-radius:6px}label:focus-within{outline:2px solid var(--muted)}input{position:absolute;width:1px;height:1px;opacity:0}
+main{height:224px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border-block:1px solid var(--line)}p{margin:10px 14px;color:var(--muted)}article{border-bottom:1px solid var(--line);padding:10px 14px}h2{margin:0 0 4px;font-size:15px;font-variant-numeric:tabular-nums}main:focus-visible{outline:2px solid var(--muted);outline-offset:-2px}section{margin:4px 0 8px}section p{margin:0 0 7px}ol{padding:0;margin:0;list-style:none}li{display:flex;gap:8px;align-items:center;padding:2px 0}img{width:20px;height:20px;object-fit:contain}li span{min-width:0;overflow-wrap:anywhere}footer{font-size:12px;color:var(--muted);padding:4px 14px}
+</style>
+<header><h1>每日汇总</h1><label>打开本机 JSON<input id="file" type="file" accept=".json,application/json" aria-label="打开 EyE Care 每日汇总 JSON"></label></header>
+<main id="rows" tabindex="0" aria-label="每日记录，滚动浏览"><p>在 EyE Care 点「导出 JSON」，再在这里打开。滚动查看每天的用时、分类和常用应用。</p></main>
+<footer id="status" role="status">文件只在当前浏览器窗口中读取。</footer>
+<script>
+const rows = document.getElementById('rows');
+const statusLine = document.getElementById('status');
+function node(tag, text) {
+  const el = document.createElement(tag);
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+function duration(value) {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  if (seconds < 60) return seconds + '秒';
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? minutes + '分' : Math.floor(minutes / 60) + '小时 ' + minutes % 60 + '分';
+}
+function dayRow(day) {
+  const line = node('article');
+  const [, month, date] = String(day.local_date).split('-');
+  const title = node('h2', Number(month) + '月' + Number(date) + '日　' + duration(day.total_usage_seconds));
+  const body = node('section');
+  const categories = Object.entries(day.categories_seconds || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+  body.append(node('p', categories.map(([name, seconds]) => name + ' ' + duration(seconds)).join(' · ') || '暂无分类记录'));
+  const list = node('ol');
+  const apps = Array.isArray(day.top_apps) ? day.top_apps : [...(day.apps || [])].sort((a, b) => b.seconds - a.seconds);
+  for (const app of apps.slice(0, 5)) {
+    const item = node('li');
+    if (typeof app.icon === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(app.icon)) {
+      const image = node('img'); image.alt = ''; image.src = app.icon; item.append(image);
+    }
+    item.append(node('span', app.name || app.app));
+    list.append(item);
+  }
+  body.append(list); line.append(title, body); return line;
+}
+let selected = 0;
+document.getElementById('file').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const current = ++selected;
+  try {
+    const data = JSON.parse(await file.text());
+    if (current !== selected) return;
+    if (!Array.isArray(data.days) || !String(data.schema).startsWith('eye_care_ai_export@')) throw Error();
+    const days = [...data.days].sort((a, b) => b.local_date.localeCompare(a.local_date));
+    rows.replaceChildren(...days.map(dayRow));
+    if (!days.length) rows.append(node('p', '这份文件没有每日记录。'));
+    rows.scrollTop = 0;
+    statusLine.textContent = '已打开 ' + days.length + ' 条设备日记录。关闭或刷新后清空。';
+  } catch {
+    if (current === selected) statusLine.textContent = '无法读取这份文件，请选择 EyE Care 导出的每日汇总 JSON。';
+  }
+});
+</script>
+</html>

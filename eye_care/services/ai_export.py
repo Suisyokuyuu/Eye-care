@@ -1,12 +1,17 @@
 """Stable AI report schema, shared by JSON export and Notion sync."""
 from __future__ import annotations
 
+import logging
 from collections import Counter
+from functools import lru_cache
+from pathlib import PureWindowsPath
 from datetime import datetime, timedelta, timezone
 
 from eye_care.data.transfer import get_or_create_device_id
 from eye_care.utils.site_rules import merge_domain_usage
 from .device_identity import installation_id
+from .config_service import ConfigService
+from .context import ServiceContext
 
 
 def build_ai_export(controller, days: int, include_sites: bool, *, now=None) -> dict:
@@ -22,6 +27,19 @@ def build_ai_export(controller, days: int, include_sites: bool, *, now=None) -> 
     device = installation_id(controller.data_dir)
     source = get_or_create_device_id(controller.data_dir)
     device_name = str(getattr(cfg, "notion_device_name", "") or "").strip() or f"电脑 {device[:6]}"
+    icons = ConfigService(ServiceContext(controller, logging.getLogger(__name__)))
+    paths = controller.get_app_paths() if hasattr(controller, "get_app_paths") else {}
+
+    @lru_cache(maxsize=None)
+    def local_icon(app):
+        path = PureWindowsPath(paths.get(app) or "")
+        if not path.is_absolute() or path.drive.startswith("\\\\"):
+            return None
+        try:
+            return icons.get_icon(app_short=app).get("data_url") or None
+        except (OSError, ValueError, ImportError):
+            return None
+
     reports = []
     for day in dates:
         apps, sites, categories = Counter(), Counter(), Counter()
@@ -47,6 +65,7 @@ def build_ai_export(controller, days: int, include_sites: bool, *, now=None) -> 
             "coverage": "recorded_activity_only; missing data does not mean zero computer use",
             "has_records": bool(apps or sites or events), "total_usage_seconds": sum(apps.values()),
             "apps": app_rows, "categories_seconds": dict(sorted(categories.items())),
+            "top_apps": [{**row, "icon": local_icon(row["app"])} for row in app_rows[:5]],
             "sites_status": "included" if sites_allowed else ("not_requested" if browser_enabled else "recording_disabled"),
             "sites": [{"domain": k, "seconds": v} for k, v in sorted(sites.items(), key=lambda p: (-p[1], p[0]))],
             "rest_event_counts": {k: events[k] for k in ("rest_begin", "rest_complete", "rest_snooze")},

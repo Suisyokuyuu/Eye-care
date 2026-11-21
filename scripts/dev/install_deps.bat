@@ -16,14 +16,14 @@ REM  Chinese UI belongs in scripts\menu.py, never in a .bat.
 REM  Guarded by tests\test_bat_encoding.py.
 REM ============================================================================
 setlocal EnableExtensions
-cd /d "%~dp0.."
+cd /d "%~dp0..\.."
 
 echo ========================================
 echo   EyE Care - install dependencies
 echo ========================================
 echo.
 
-if not exist "requirements.txt" goto :no_req
+if not exist "scripts\dev\requirements.txt" goto :no_req
 
 REM ---- locate a usable interpreter (same order as menu.bat) ----
 set "PY="
@@ -52,7 +52,7 @@ echo Upgrading pip ...
 echo.
 
 echo Installing from requirements.txt ...
-%PY% -m pip install -r requirements.txt
+%PY% -m pip install -r "scripts\dev\requirements.txt"
 if errorlevel 1 goto :failed
 
 echo.

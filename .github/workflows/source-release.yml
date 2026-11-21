@@ -1,0 +1,41 @@
+name: EyE Care 稳定版
+run-name: 发布 v${{ inputs.version }}
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 正式版本号，例如 1.4.1
+        required: true
+        type: string
+      commit:
+        description: 要发布的完整提交 SHA
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: eyecare-stable-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          architecture: x64
+      - uses: actions/cache@v4
+        with:
+          path: dist/source-releases/EyE-Care-runtime-*.zip
+          key: eyecare-runtime-${{ hashFiles('scripts/release/runtime-lock.json') }}
+      - name: 校验并发布
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: python -B -X utf8 -m scripts.release.publish_source "$env:RELEASE_VERSION" "$env:RELEASE_COMMIT"

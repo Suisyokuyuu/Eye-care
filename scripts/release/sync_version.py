@@ -5,9 +5,9 @@
 
 用法::
 
-    python scripts/sync_version.py            # 按 version.py 现有版本重新生成 version_info.txt
-    python scripts/sync_version.py 1.4.0      # 改版本号，再重新生成
-    python scripts/sync_version.py --show     # 只打印当前版本，不写任何文件
+    python -m scripts.release.sync_version            # 按 version.py 现有版本重新生成 version_info.txt
+    python -m scripts.release.sync_version 1.4.0      # 改版本号，再重新生成
+    python -m scripts.release.sync_version --show     # 只打印当前版本，不写任何文件
 
 版本号格式：`X.Y.Z`（可写 `X.Y` 或 `X.Y.Z.B`，会自动补零到四段）。
 **建议至少写满三段**——检查更新用的 `api/common._parse_semver` 只认 `\\d+\\.\\d+\\.\\d+`，
@@ -20,9 +20,9 @@ import re
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VERSION_PY = PROJECT_ROOT / "eye_care" / "version.py"
-VERSION_INFO = PROJECT_ROOT / "version_info.txt"
+VERSION_INFO = Path(__file__).resolve().parent / "legacy" / "version_info.txt"
 
 # exe 属性里的固定字段（与版本号无关的部分）。要改公司名/版权年份就改这里。
 COMPANY_NAME = "Suisyokuyuu"

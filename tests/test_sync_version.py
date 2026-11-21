@@ -1,4 +1,4 @@
-"""版本号同步工具单测（scripts/sync_version.py）。
+"""版本号同步工具单测（scripts/release/sync_version.py）。
 
 version_info.txt 是构建期产物，由 version.py 生成。这里锁住格式解析、渲染内容、
 以及"改 version.py 时不碰其它内容"三件事。纯逻辑 + tmpdir，Linux 可跑。
@@ -12,7 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "sync_version.py"
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "release" / "sync_version.py"
 _spec = importlib.util.spec_from_file_location("sync_version", _SCRIPT)
 sv = importlib.util.module_from_spec(_spec)
 sys.modules["sync_version"] = sv
@@ -185,7 +185,7 @@ class RepoStateTests(unittest.TestCase):
         self.assertEqual(
             actual.replace("\r\n", "\n"),
             expected.replace("\r\n", "\n"),
-            "version_info.txt 与 version.py 不同步，请运行 python scripts/sync_version.py",
+            "version_info.txt 与 version.py 不同步，请运行 python -m scripts.release.sync_version",
         )
 
     def test_repo_app_version_has_three_parts(self) -> None:

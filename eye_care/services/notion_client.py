@@ -1,6 +1,7 @@
 """Small, credential-safe Notion REST client; writes are never blindly retried."""
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -17,7 +18,7 @@ class NotionError(RuntimeError):
 
 
 DATABASE_TITLE = "EyE Care · 每日数据仓库（正式版）"
-DATABASE_TITLES = {DATABASE_TITLE, "EyE Care · 每日使用汇总"}
+DATABASE_TITLES = {DATABASE_TITLE, "EyE Care · 每日数据仓库", "EyE Care · 每日使用汇总"}
 DAILY_SCHEMA = {**{k: "rich_text" for k in (
     "设备", "总时长", "应用汇总", "分类汇总", "网站汇总", "同步键", "设备ID", "数据源ID", "内容指纹")},
     **{k: "number" for k in ("使用分钟", "总秒数", "休息完成", "休息开始", "跳过休息")},
@@ -40,13 +41,15 @@ def daily_properties(report, digest):
     day, name = report["local_date"], report["device_name"]
     total = report["total_usage_seconds"]
     events = report["rest_event_counts"]
-    app_text = "；".join(f"{r['name']} {duration_text(r['seconds'])}" for r in report["apps"])
+    app_text = "；".join(f"{r['name']}（{r.get('category') or '未分类'}）{duration_text(r['seconds'])}" for r in report["apps"])
     category_text = "；".join(f"{k} {duration_text(v)}" for k, v in report["categories_seconds"].items())
     sites = "；".join(f"{r['domain']} {duration_text(r['seconds'])}" for r in report["sites"])
     values = {"设备": name, "总时长": duration_text(total), "应用汇总": app_text,
               "分类汇总": category_text, "网站汇总": sites, "同步键": report["sync_key"],
               "设备ID": report["device_id"], "数据源ID": report["data_source_id"], "内容指纹": digest}
     result = {k: {"rich_text": rich_text(v)} for k, v in values.items()}
+    if "_icon_files" in report:
+        result["应用图标"] = {"files": report["_icon_files"]}
     result.update({k: {"number": v} for k, v in {
         "总秒数": total, "使用分钟": round(total / 60, 2), "休息完成": events["rest_complete"],
         "休息开始": events["rest_begin"], "跳过休息": events["rest_snooze"]}.items()})
@@ -85,15 +88,17 @@ class NotionClient:
         self._token = token
         self._opener = build_opener(_NoRedirect())
         self._last_request = 0.0
+        self._icon_uploads = {}
+        self._source_schema = {}
 
-    def request(self, method: str, path: str, body=None) -> dict:
+    def request(self, method: str, path: str, body=None, *, content_type="application/json") -> dict:
         delay = 0.36 - (time.monotonic() - self._last_request)
         if delay > 0:
             time.sleep(delay)
-        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        data = body if body is None or isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
         req = Request("https://api.notion.com/v1" + path, data=data, method=method, headers={
             "Authorization": "Bearer " + self._token, "Notion-Version": "2026-03-11",
-            "Content-Type": "application/json",
+            "Content-Type": content_type,
         })
         self._last_request = time.monotonic()
         try:
@@ -154,9 +159,48 @@ class NotionClient:
             props = source.get("properties", {})
             if all(props.get(k, {}).get("type") == t for k, t in DAILY_SCHEMA.items()):
                 candidates.append(page_id(source["id"]))
+                compatible_properties = props
         if len(candidates) != 1:
             raise NotionError("统计库字段不匹配或有多个数据源，请使用 EyE Care 每日使用汇总数据库。")
-        return candidates[0], page_id(database["id"])
+        source_id = candidates[0]
+        icon_type = compatible_properties.get("应用图标", {}).get("type")
+        if icon_type is None:
+            self.request("PATCH", f"/data_sources/{source_id}", {"properties": {"应用图标": {"files": {}}}})
+        elif icon_type != "files":
+            raise NotionError("统计库的“应用图标”需要使用文件类型。")
+        self._source_schema = compatible_properties
+        return source_id, page_id(database["id"])
+
+    def refresh_dashboard(self, source, days, changed_totals):
+        from .notion_dashboard import refresh_calendar
+        return refresh_calendar(self, source, self._source_schema, days, changed_totals)
+
+    def prepare_record(self, report):
+        files = []
+        top = []
+        for rank, entry in enumerate(report.get("top_apps", []), 1):
+            row = {k: v for k, v in entry.items() if k != "icon"}
+            icon = entry.get("icon") or ""
+            if icon.startswith("data:image/png;base64,"):
+                raw = base64.b64decode(icon.partition(",")[2], validate=True)
+                if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) <= 256 * 1024:
+                    filename = f"top-{rank:02}.png"
+                    if raw not in self._icon_uploads:
+                        upload = self.request("POST", "/file_uploads", {
+                            "mode": "single_part", "filename": filename, "content_type": "image/png"})
+                        upload_id = page_id(upload["id"])
+                        boundary = uuid.uuid4().hex
+                        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                                f'filename="{filename}"\r\nContent-Type: image/png\r\n\r\n').encode()
+                        self.request("POST", f"/file_uploads/{upload_id}/send",
+                                     body + raw + f"\r\n--{boundary}--\r\n".encode(),
+                                     content_type=f"multipart/form-data; boundary={boundary}")
+                        self._icon_uploads[raw] = upload_id
+                    files.append({"name": filename, "type": "file_upload",
+                                  "file_upload": {"id": self._icon_uploads[raw]}})
+                    row["icon_file"] = filename
+            top.append(row)
+        return {**report, "top_apps": top, "_icon_files": files}
 
     def find_day(self, source, key, device, day):
         result = self.request("POST", f"/data_sources/{page_id(source)}/query", {
@@ -191,18 +235,29 @@ class NotionClient:
         self._check_owner(row, key, device, day)
         return row
 
+    def _record_properties(self, report, digest, *, creating):
+        props = daily_properties(report, digest)
+        if self._source_schema.get("日历明细行", {}).get("type") == "checkbox":
+            if creating:
+                props["记录"] = {"title": rich_text(duration_text(report["total_usage_seconds"]).replace(" ", ""))}
+            else:
+                # The calendar owns this label, which can include other devices.
+                props.pop("记录")
+        return props
+
     def create_record(self, source, report, digest):
+        public_report = {k: v for k, v in report.items() if k != "_icon_files"}
         result = self.request("POST", "/pages", {
             "parent": {"type": "data_source_id", "data_source_id": page_id(source)},
-            "properties": daily_properties(report, digest),
+            "properties": self._record_properties(report, digest, creating=True),
             "children": [{"object": "block", "type": "code", "code": {
-                "rich_text": rich_text(json.dumps(report, ensure_ascii=False, indent=2)), "language": "json"}}]})
+                "rich_text": rich_text(json.dumps(public_report, ensure_ascii=False, indent=2)), "language": "json"}}]})
         return page_id(result.get("id", ""))
 
     def update_record(self, target, report, digest):
         # Update only the managed JSON block; leave user notes on the row untouched.
-        self.update_day(target, report)
-        self.request("PATCH", f"/pages/{page_id(target)}", {"properties": daily_properties(report, digest)})
+        self.update_day(target, {k: v for k, v in report.items() if k != "_icon_files"})
+        self.request("PATCH", f"/pages/{page_id(target)}", {"properties": self._record_properties(report, digest, creating=False)})
 
     def create_day(self, parent: str, title: str, report: dict) -> str:
         result = self.request("POST", "/pages", {

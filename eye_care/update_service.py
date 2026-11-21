@@ -315,6 +315,8 @@ class UpdateService:
         self._cache_mono = now
         return result
 
+    _validate_asset_url = staticmethod(_github_download_url)
+
     def _download_file(
         self,
         url: str,
@@ -324,7 +326,7 @@ class UpdateService:
         progress: Optional[Callable[[int, int], None]] = None,
         max_bytes: int = MAX_PACKAGE_BYTES,
     ) -> str:
-        _github_download_url(url)
+        self._validate_asset_url(url)
         existing = target.stat().st_size if target.is_file() else 0
         if expected_size and existing > expected_size:
             target.unlink(missing_ok=True)
@@ -554,3 +556,10 @@ class UpdateService:
             runtime_helper.unlink(missing_ok=True)
             raise UpdateError(f"无法启动独立升级器：{exc}") from exc
         return {"ok": True, "launched": True, "version": pending["version"]}
+
+
+def make_update_service(**options):
+    if getattr(sys, "frozen", False):
+        return UpdateService(**options)
+    from .source_update import SourceUpdateService
+    return SourceUpdateService(**options)

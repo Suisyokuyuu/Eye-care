@@ -19,6 +19,9 @@ RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 def _get_startup_command() -> str:
     """当前进程的启动命令，用于写入 Run 项。"""
+    from eye_care.bootstrap.constants import INSTALL_ROOT, PROJECT_ROOT
+    if INSTALL_ROOT != PROJECT_ROOT:
+        return '"' + str(INSTALL_ROOT / 'EyE Care.exe') + '"'
     if getattr(sys, "frozen", False):
         return sys.executable
     return sys.executable + ' "' + os.path.abspath(sys.argv[0]) + '"'

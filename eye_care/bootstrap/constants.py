@@ -16,6 +16,9 @@ else:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     _BUNDLE_ROOT = PROJECT_ROOT
 
+from eye_care.portable import install_root
+INSTALL_ROOT = install_root(PROJECT_ROOT)
+
 # 声音等静态资源目录（QML 迁移后，原 ui/web 已退役，资源迁至 eye_care/assets）
 ASSETS_DIR = _BUNDLE_ROOT / "eye_care" / "assets"
 

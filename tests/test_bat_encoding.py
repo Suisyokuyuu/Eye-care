@@ -18,10 +18,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 自动发现：根目录 + scripts\ 下的所有 .bat。用 sorted 保证失败信息稳定可复现。
+# 自动发现：根目录和 scripts 下的所有 .bat。用 sorted 保证失败信息稳定可复现。
 ASCII_ONLY_BATS = tuple(
     sorted(
-        list(PROJECT_ROOT.glob("*.bat")) + list((PROJECT_ROOT / "scripts").glob("*.bat"))
+        list(PROJECT_ROOT.glob("*.bat")) + list((PROJECT_ROOT / "scripts").rglob("*.bat"))
     )
 )
 
@@ -30,8 +30,7 @@ class BatEncodingTests(unittest.TestCase):
     def test_expected_bats_are_discovered(self) -> None:
         # 防止 glob 因目录结构变动而空转，护栏悄悄失效
         names = {p.name for p in ASCII_ONLY_BATS}
-        for expected in ("menu.bat", "build_exe.bat", "clear_pycache.bat",
-                         "install_deps.bat", "run_qml_shell.bat"):
+        for expected in ("menu.bat", "install_deps.bat"):
             with self.subTest(bat=expected):
                 self.assertIn(expected, names)
 

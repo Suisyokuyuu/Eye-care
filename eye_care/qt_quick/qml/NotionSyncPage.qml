@@ -116,7 +116,7 @@ Item {
                         }
                     }
                     SettingsPage.Check { text: "包含网站统计"; checked: page.includeSites; onToggled: page.includeSites = v }
-                    SettingsPage.HelpText { text: "仅含每日总时长、应用/分类汇总和休息次数，不含逐分钟记录或单次休息时间。网站统计默认关闭。" }
+                    SettingsPage.HelpText { text: "同步每日分类总时长、休息次数及用时前五的应用（含可取得的图标）。网站汇总默认关闭。" }
                     SettingsPage.Divider {}
                     SettingsPage.Check {
                         id: startupCheck

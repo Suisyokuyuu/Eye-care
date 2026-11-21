@@ -36,7 +36,7 @@ set "PYTHONIOENCODING=utf-8"
 set "MENU=scripts\menu.py"
 if not exist "%MENU%" goto :no_menu
 
-REM ---- locate a usable interpreter (same order as scripts\run_qml_shell.bat) ----
+REM ---- locate a usable interpreter ----
 set "PY="
 if exist "venv\Scripts\python.exe" set "PY=venv\Scripts\python.exe"
 if defined PY goto :py_ok
@@ -53,7 +53,7 @@ if defined PY goto :py_ok
 goto :no_python
 
 :py_ok
-%PY% "%MENU%"
+%PY% -B -X utf8 "%MENU%" %*
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" goto :failed
 goto :end

@@ -190,12 +190,15 @@ class NotionSyncService:
             source, database = client.resolve_source(parent)
             envelope = self._report_builder(self.controller, cfg["days"], cfg["include_sites"])
             written = unchanged = empty = 0
+            changed_totals = {}
             for index, report in enumerate(envelope["days"]):
                 if self._closing.is_set():
                     raise NotionError("同步已停止；下次可继续更新已完成的记录。")
                 day = report["local_date"]
                 key = f"eye_care_daily@2/{report['device_id']}/{day}"
-                report = {**report, "sync_key": key, "notion_layout": 2}
+                top = report.get("top_apps", report["apps"][:5])
+                report = {**report, "apps": [{k: v for k, v in app.items() if k != "icon"} for app in top],
+                          "top_apps": top, "sync_key": key, "notion_layout": 3}
                 row = client.find_day(source, key, report["device_id"], day)
                 state_key = f"{source}/{key}"
                 previous = self._state["pages"].get(state_key, {})
@@ -213,6 +216,7 @@ class NotionSyncService:
                     unchanged += 1
                 else:
                     uploaded = {**report, "exported_at": envelope["generated_at"], "timezone": envelope["local_timezone"]}
+                    uploaded = client.prepare_record(uploaded)
                     if target:
                         client.update_record(target, uploaded, digest)
                     else:
@@ -231,9 +235,13 @@ class NotionSyncService:
                         self._state["pages"][state_key] = {"page_id": target, "digest": digest}
                         self._state["pending_creates"].pop(state_key, None)
                         self._save_state()
+                    if report.get("data_kind", "正式数据") == "正式数据":
+                        changed_totals[target] = report["total_usage_seconds"]
                     written += 1
                 if on_progress:
                     on_progress(index + 1, len(envelope["days"]))
+            if envelope["days"]:
+                client.refresh_dashboard(source, [r["local_date"] for r in envelope["days"]], changed_totals)
             summary = f"同步完成：更新 {written} 天，未变化 {unchanged} 天，无记录 {empty} 天。"
             with self._lock:
                 self._state.update(last_success_at=datetime.now().astimezone().isoformat(), last_error="", last_summary=summary)

@@ -30,9 +30,9 @@ def main():
     args = parse_args()
     if args.startup_check and (not args.data_dir or args.no_ui):
         raise SystemExit("--startup-check requires an isolated --data-dir")
-    from eye_care.bootstrap.constants import PROJECT_ROOT
+    from eye_care.bootstrap.constants import INSTALL_ROOT
 
-    app_root = PROJECT_ROOT
+    app_root = INSTALL_ROOT
     data_dir = Path(args.data_dir).resolve() if args.data_dir else (app_root / "user_data")
     data_dir.mkdir(parents=True, exist_ok=True)
     from eye_care.diagnostics.logging_setup import setup_logging
@@ -46,6 +46,8 @@ def main():
         log = logging.getLogger(__name__)
         controller = AppController(data_dir=data_dir)
         controller.start()
+        from eye_care.portable import signal_ready
+        signal_ready()
         log.info("no-ui: headless. Ctrl+C to stop.")
         try:
             while True:
@@ -63,6 +65,8 @@ def main():
                      debug_console=args.debug, startup_check=args.startup_check)
     except Exception as exc:
         logging.getLogger(__name__).exception("Desktop startup failed")
+        if os.environ.get("EYECARE_TRIAL_READY"):
+            raise SystemExit(1)
         if args.startup_check:
             report_path = data_dir / "startup_check.json"
             if not report_path.exists():

@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from eye_care.bootstrap.constants import ASSETS_DIR, PROJECT_ROOT
+from eye_care.bootstrap.constants import ASSETS_DIR, INSTALL_ROOT, PROJECT_ROOT
 from eye_care.ui.action_contracts import normalize_notify_window_action
 from eye_care.ui.file_dialog import _create_file_dialog_safe
 
@@ -670,7 +670,7 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     class QtTrayController(QObject):
         def __init__(self) -> None:
             super().__init__()
-            self.icon_path = PROJECT_ROOT / "icon.ico"
+            self.icon_path = INSTALL_ROOT / "docs" / "picture" / "icon.ico"
             self.tray = QSystemTrayIcon(self)
             self.menu = QMenu()
             self.menu.setStyleSheet("""
@@ -685,10 +685,13 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
             self.actions = {}
             # PyInstaller resources may live under _MEIPASS rather than beside the EXE.
             icon = QIcon()
-            resource_roots = dict.fromkeys((PROJECT_ROOT, Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))))
+            resource_roots = dict.fromkeys((PROJECT_ROOT, INSTALL_ROOT, Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))))
             for resource_root in resource_roots:
-                for name in ("icon.ico", "icon.png"):
+                for name in ("docs/picture/icon.ico", "docs/picture/icon.png", "picture/icon.ico",
+                             "picture/icon.png", "icon.ico", "icon.png"):
                     candidate = resource_root / name
+                    if not candidate.is_file():
+                        continue
                     icon = QIcon(str(candidate))
                     if not icon.isNull():
                         self.icon_path = candidate
@@ -1188,7 +1191,9 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
         log.info("qt.qml_shell: AppShell 已装配并显示（persist=True）")
         return root
 
-    _create_qml_shell()
+    shell_root = _create_qml_shell()
+    if os.environ.get("EYECARE_TRIAL_READY") and shell_root is None:
+        raise RuntimeError("新版主界面初始化失败")
 
     # 窗口就绪：处理在 QML 创建前就收到的激活请求（极少见，保险起见）
     if _si_pending_activate.get("value"):
@@ -1291,14 +1296,22 @@ def run_qt_shell(data_dir: Path, no_single: bool, api_port: int = 0, debug_conso
     if no_single:
         log.info("qt host single-instance bypass enabled")
 
+    from eye_care.portable import signal_ready
+    if not startup_check:
+        QTimer.singleShot(0, signal_ready)
+
     if startup_check:
         def finish_check(ok, error):
+            from eye_care.version import APP_VERSION
             if not ok:
                 log.error("Actual desktop startup check failed: %s", error)
             (data_dir / "startup_check.json").write_text(json.dumps({
                 "ok": ok, "error": error, "frozen": bool(getattr(sys, "frozen", False)),
+                "source_root": str(PROJECT_ROOT), "app_version": APP_VERSION,
                 "executable": sys.executable, "main_window": True, "notion_panel": ok,
             }, ensure_ascii=False, indent=2), encoding="utf-8")
+            if ok:
+                signal_ready()
             app.exit(0 if ok else 1)
 
         def verify_sync_window():

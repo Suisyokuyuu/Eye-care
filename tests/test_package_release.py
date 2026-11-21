@@ -6,8 +6,8 @@ import zipfile
 from pathlib import Path
 
 from eye_care.update_service import MAIN_EXE_NAME, MANIFEST_NAME, UPDATER_EXE_NAME
-from scripts.package_release import create_archive, main as package_main, package_name
-from scripts.verify_release import verify_archive
+from scripts.release.package_release import create_archive, main as package_main, package_name
+from scripts.release.verify_release import verify_archive
 
 
 class PackageReleaseTests(unittest.TestCase):

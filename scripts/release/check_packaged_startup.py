@@ -12,8 +12,8 @@ def verify_startup(package: Path, report_dir: Path | None = None) -> dict:
     exe = package / "EyE Care.exe"
     if not exe.is_file():
         raise RuntimeError(f"Executable missing: {exe}")
-    root = Path(__file__).resolve().parent.parent
-    report_dir = (report_dir or root / "outputs" / "packaged-startup" / str(uuid.uuid4())).resolve()
+    root = Path(__file__).resolve().parents[2]
+    report_dir = (report_dir or root / "build" / "startup-checks" / str(uuid.uuid4())).resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
     if (report_dir / "startup_check.json").exists():
         raise RuntimeError("Use a fresh report directory; stale startup evidence is not accepted")
@@ -37,8 +37,17 @@ def verify_startup(package: Path, report_dir: Path | None = None) -> dict:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     captures_ok = all((report_dir / name).is_file() and (report_dir / name).stat().st_size > 0
                       for name in ("startup-main.png", "startup-notion.png", "startup-settings.png"))
-    correct_exe = Path(report.get("executable", "")).resolve() == exe.resolve()
-    if (code or not report.get("ok") or not report.get("frozen") or not correct_exe
+    interpreter = Path(report.get("executable", "")).resolve()
+    if (package / "current.txt").is_file():
+        version = (package / "current.txt").read_text("ascii").strip()
+        app = package / "versions" / version
+        runtime = (app / "runtime-id.txt").read_text("ascii").strip()
+        correct_exe = (interpreter == (package / "runtime" / runtime / "pythonw.exe").resolve()
+                       and Path(report.get("source_root", "")).resolve() == app.resolve()
+                       and report.get("app_version") == version)
+    else:
+        correct_exe = bool(report.get("frozen")) and interpreter == exe.resolve()
+    if (code or not report.get("ok") or not correct_exe
             or not report.get("main_window") or not report.get("notion_panel") or not captures_ok):
         raise RuntimeError(f"Packaged startup failed: {report}; see {report_dir}")
     print(f"Actual EXE main window and Notion panel verified: {report_dir}")

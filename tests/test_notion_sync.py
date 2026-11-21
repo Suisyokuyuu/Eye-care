@@ -38,6 +38,12 @@ class FakeNotion:
         self.created = self.updated = 0
         self.lose_create_response = False
 
+    def prepare_record(self, report):
+        return report
+
+    def refresh_dashboard(self, source, days, changed_totals):
+        pass
+
     def resolve_source(self, parent):
         return parent, parent
 
@@ -103,12 +109,62 @@ class NotionSyncTests(unittest.TestCase):
         self.assertNotIn("hourly_seconds", report)
         self.assertNotIn("minute_usage", report)
 
+    def test_top_five_keeps_all_category_seconds_and_only_sends_ranked_apps(self):
+        for n in range(1, 8):
+            self.repo.add_usage(UsageDelta(f"tool{n}", n, self.now))
+        local = build_ai_export(self.c, 1, False, now=self.now)["days"][0]
+        self.assertEqual(len(local["apps"]), 7)
+        self.service.sync()
+        synced = next(iter(self.remote.pages.values()))["report"]
+        self.assertEqual([row["app"] for row in synced["apps"]], [f"tool{n}" for n in (7, 6, 5, 4, 3)])
+        self.assertEqual(sum(synced["categories_seconds"].values()), 28)
+        self.assertNotIn("tool1", json.dumps(synced))
+
+    def test_ranked_icons_are_uploaded_once_and_omitted_from_report_text(self):
+        import base64
+        from unittest.mock import patch
+        client = NotionClient("test")
+        raw = b"\x89PNG\r\n\x1a\nmock"
+        icon = "data:image/png;base64," + base64.b64encode(raw).decode()
+        with patch.object(client, "request", side_effect=[{"id": PARENT}, {}]) as request:
+            report = client.prepare_record({"top_apps": [{"name": "A"}, {"name": "B", "icon": icon},
+                                                         {"name": "C", "icon": icon}]})
+        self.assertEqual(request.call_count, 2)
+        self.assertIn(raw, request.call_args_list[1].args[2])
+        self.assertEqual([f["name"] for f in report["_icon_files"]], ["top-02.png", "top-03.png"])
+        self.assertNotIn("base64", json.dumps(report["top_apps"]))
+
     def test_sites_require_both_recording_and_export_opt_in(self):
         self.repo.add_domain_usage(DomainDelta("example.test", 7, self.now))
         self.assertEqual(build_ai_export(self.c, 1, True, now=self.now)["days"][0]["sites"], [])
         self.cfg.record_browser_enabled = True
         report = build_ai_export(self.c, 1, True, now=self.now)["days"][0]
         self.assertEqual(report["sites"], [{"domain": "example.test", "seconds": 7}])
+
+    def test_dashboard_adds_devices_and_groups_weeks_across_new_year(self):
+        from eye_care.services.notion_dashboard import DISPLAY_FIELDS, display_changes
+
+        def record(key, day, seconds):
+            fields = {n: {kind: False if kind == "checkbox" else None}
+                      for n, kind in DISPLAY_FIELDS.items()}
+            fields.update({"日期": {"date": {"start": day}}, "总秒数": {"number": seconds},
+                           "记录": {"title": rich_text(key)}, "同步键": {"rich_text": rich_text(key)}})
+            return {"id": key, "properties": fields}
+
+        rows = [record("b", "2025-12-31", 3000), record("a", "2025-12-31", 7240),
+                record("c", "2026-01-01", 3600), record("d", "2026-01-05", 59)]
+        patch = dict(display_changes(rows))
+        self.assertEqual(patch["a"]["同日其他秒数"]["number"], 3000)
+        self.assertEqual(patch["a"]["记录"]["title"][0]["text"]["content"], "2小时50分")
+        self.assertTrue(patch["b"]["日历明细行"]["checkbox"])
+        self.assertEqual(patch["c"]["同周其他秒数"]["number"], 10240)
+        self.assertTrue(patch["c"]["周趋势汇总行"]["checkbox"])
+        self.assertEqual(patch["d"]["同周其他秒数"]["number"], 0)
+        for row in rows:
+            row["properties"].update(patch[row["id"]])
+        self.assertEqual(list(display_changes(rows)), [])
+        with self.assertRaises(NotionError):
+            list(display_changes(rows + rows[:1]))
 
     def test_manual_sync_is_idempotent_and_updates_changed_day(self):
         self.usage(10)

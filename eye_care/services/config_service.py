@@ -324,14 +324,14 @@ class ConfigService:
 
     def check_update(self) -> dict:
         """Compatibility API for callers that only need release information."""
-        from eye_care.bootstrap.constants import PROJECT_ROOT
-        from eye_care.update_service import UpdateService
+        from eye_care.bootstrap.constants import INSTALL_ROOT
+        from eye_care.update_service import make_update_service
 
         service = getattr(self, "_update_service", None)
         if service is None:
-            service = UpdateService(
+            service = make_update_service(
                 data_dir=Path(self.ctx.controller.data_dir),
-                install_dir=PROJECT_ROOT,
+                install_dir=INSTALL_ROOT,
                 logger=self.ctx.log,
             )
             self._update_service = service

@@ -1,32 +1,34 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 
 import os
 
 # 获取项目根目录
-project_root = os.path.dirname(os.path.abspath(SPEC))
+from pathlib import Path
+legacy_dir = Path(SPEC).resolve().parent
+project_root = str(legacy_dir.parents[2])
 
 # 注意：不打包 user_data 目录，user_data 目录在运行时动态创建
 a = Analysis(
-    ['main.py'],
+    [os.path.join(project_root, 'main.py')],
     pathex=[project_root],
     binaries=[],
-    datas=[
+    datas=[(os.path.join(project_root, path), target) for path, target in [
         # 仅打包运行期按路径加载的资源（QML 源 + 声音）。Python 代码本身已编译进 PYZ，
         # 无需再以源码形式整目录拷贝（旧 ('eye_care','eye_care') 会连 .py 源 + __pycache__ 一起带进来）。
         # qml 同时供 _internal(__file__ 相对，notify/rest 浮层) 与外层(PROJECT_ROOT, AppShell) 加载；
-        # 外层副本由 build_exe.bat 的 xcopy 从 _internal 复制。
         ('eye_care/qt_quick/qml', 'eye_care/qt_quick/qml'),
         ('eye_care/assets', 'eye_care/assets'),
         # 诊断事件字典：策略引擎运行期按路径读取（policy_engine._find_event_codes_path）。
         ('eye_care/diagnostics/event_codes.yml', 'eye_care/diagnostics'),
-        ('icon.ico', '.'),
-        ('icon.png', '.'),
+        ('docs/picture/icon.ico', 'docs/picture'),
+        ('docs/picture/icon.png', 'docs/picture'),
         ('README.md', '.'),
-        ('screenshot.png', '.'),
-        ('使用手册.md', '.'),
-        ('docs/notion-guide.html', 'docs'),
+        ('docs/picture/screenshot.png', 'docs/picture'),
+        ('docs/Notion配置指南.html', 'docs'),
+        ('LICENSE', '.'),
+        ('docs/notion-report-viewer.html', 'docs'),
         # Note: version_info.txt is a build-time input (EXE version= below), not a runtime asset.
-    ],
+    ]],
     hiddenimports=[
         'yaml',          # PyYAML -- imported inside function body, may not be auto-detected
         'PIL',
@@ -94,7 +96,7 @@ pyz = PYZ(a.pure)
 # Independent one-file updater. The running app is copied to user_data/updates/runtime
 # before launch, so it can replace the entire one-dir application after the main PID exits.
 updater_a = Analysis(
-    ['updater_main.py'],
+    [os.path.join(project_root, 'eye_care/updater_main.py')],
     pathex=[project_root],
     binaries=[],
     datas=[],
@@ -121,7 +123,7 @@ updater_exe = EXE(
     upx=True,
     console=False,
     disable_windowed_traceback=False,
-    icon=['icon.ico'],
+    icon=[os.path.join(project_root, 'docs/picture/icon.ico')],
 )
 
 exe = EXE(
@@ -140,8 +142,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='version_info.txt',
-    icon=['icon.ico'],
+    version=str(legacy_dir / 'version_info.txt'),
+    icon=[os.path.join(project_root, 'docs/picture/icon.ico')],
 )
 
 coll = COLLECT(

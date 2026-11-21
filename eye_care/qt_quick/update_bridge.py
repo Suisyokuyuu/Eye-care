@@ -13,13 +13,13 @@ log = logging.getLogger(__name__)
 
 def build_update_io(controller, log: Optional[logging.Logger] = None):
     import webbrowser
-    from eye_care.bootstrap.constants import PROJECT_ROOT
-    from eye_care.update_service import UpdateService
+    from eye_care.bootstrap.constants import INSTALL_ROOT
+    from eye_care.update_service import make_update_service
 
     lg = log or logging.getLogger(__name__)
-    service = UpdateService(
+    service = make_update_service(
         data_dir=controller.data_dir,
-        install_dir=PROJECT_ROOT,
+        install_dir=INSTALL_ROOT,
         logger=lg,
     )
     service.cleanup_runtime_helpers()
