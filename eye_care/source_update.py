@@ -55,7 +55,10 @@ def source_file(rel):
                "docs/picture/icon.png", "docs/picture/icon.ico", "docs/picture/screenshot.png",
                "docs/Notion配置指南.html", "docs/development.md"}:
         return True
-    return rel.startswith("eye_care/") and Path(rel).suffix in {".py", ".qml", ".js", ".wav", ".yml"}
+    path = Path(rel)
+    if path.parent.as_posix() == "eye_care/assets/category_icons":
+        return bool(re.fullmatch(r"[a-z]+\.png", path.name))
+    return rel.startswith("eye_care/") and path.suffix in {".py", ".qml", ".js", ".wav", ".yml"}
 
 
 def tree_manifest(folder, version):

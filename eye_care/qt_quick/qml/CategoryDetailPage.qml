@@ -14,13 +14,32 @@ Item {
     z: 105                          // 在应用设置(100)之上、应用详情(110)之下
 
     required property var bridge          // AppsBridge
+    property var iconBridge: null
+    property int iconRevision: 0
+    readonly property string iconSource: {
+        var revision = iconRevision;
+        return iconBridge ? iconBridge.icon(category) : "";
+    }
     property bool open: false
     property string category: ""
     property string searchText: ""
     signal closed()
     signal openApp(string appShort)
 
-    onOpenChanged: if (open) { searchText = ""; bridge.reload(); }
+    onOpenChanged: {
+        if (open) { searchText = ""; bridge.reload(); }
+        else if (iconPicker.opened) iconPicker.close();
+    }
+
+    Connections {
+        target: page.iconBridge
+        function onChanged() { page.iconRevision += 1; }
+    }
+
+    function finishIconChange(error) {
+        if (error) iconPicker.feedback = error;
+        else iconPicker.close();
+    }
 
     function _match(a) {
         if ((a.category || "") !== page.category) return false;
@@ -53,7 +72,18 @@ Item {
 
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "分类详情 · " + page.category; color: "#ffffff"; font.pixelSize: 22; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                Image {
+                    Layout.preferredWidth: 38; Layout.preferredHeight: 38
+                    visible: source.toString() !== ""
+                    source: page.iconSource; fillMode: Image.PreserveAspectFit; smooth: true
+                }
+                Text { text: page.category; color: "#ffffff"; font.pixelSize: 22; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                Button {
+                    objectName: "changeCategoryIcon"
+                    visible: !!page.iconBridge
+                    text: "更换图标"
+                    onClicked: iconPicker.open()
+                }
                 CloseX { onClicked: page.closed() }
             }
             Text {
@@ -128,6 +158,105 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 FooterBtn { Layout.fillWidth: true; text: "关闭"; onClicked: page.closed() }
+            }
+        }
+    }
+
+    Popup {
+        id: iconPicker
+        objectName: "categoryIconPicker"
+        property string feedback: ""
+        readonly property string selectedPreset: {
+            var revision = page.iconRevision;
+            return page.iconBridge ? page.iconBridge.selected(page.category) : "";
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(page.width - 32, 504)
+        height: Math.min(page.height - 32, 426)
+        padding: 18
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onOpened: {
+            feedback = "";
+            presetGrid.positionViewAtBeginning();
+        }
+        background: Rectangle {
+            radius: 14; color: "#11192B"; border.color: "#52618F"
+        }
+        contentItem: ColumnLayout {
+            spacing: 10
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    Layout.fillWidth: true
+                    text: "为「" + page.category + "」选图标"
+                    color: "#FAF1FD"; font.pixelSize: 18; font.bold: true
+                    elide: Text.ElideRight
+                }
+                CloseX { onClicked: iconPicker.close() }
+            }
+            GridView {
+                id: presetGrid
+                objectName: "categoryPresetGrid"
+                Layout.fillWidth: true; Layout.fillHeight: true
+                clip: true
+                cellWidth: Math.floor(width / (width >= 356 ? 4 : 3))
+                cellHeight: 77
+                model: page.iconBridge ? page.iconBridge.presets : []
+                ScrollBar.vertical: ScrollBar {}
+                delegate: Button {
+                    id: tile
+                    required property var modelData
+                    width: presetGrid.cellWidth - 6
+                    height: presetGrid.cellHeight - 5
+                    text: modelData.name
+                    checkable: false
+                    readonly property bool chosen: iconPicker.selectedPreset === modelData.key
+                    onClicked: page.finishIconChange(page.iconBridge.select(page.category, modelData.key))
+                    background: Rectangle {
+                        radius: 9
+                        color: tile.chosen ? "#373058" : tile.hovered ? "#26334B" : "#192337"
+                        border.color: tile.chosen || tile.activeFocus ? "#C3A3FF" : "#273752"
+                    }
+                    contentItem: Column {
+                        spacing: 3
+                        Image {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: 40; height: 40
+                            source: tile.modelData.source
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: tile.text
+                            color: "#F2EEF9"; font.pixelSize: 12
+                        }
+                    }
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: iconPicker.feedback !== ""
+                text: iconPicker.feedback
+                color: "#FFD2CB"; font.pixelSize: 13; wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "从本机选择…"
+                    onClicked: {
+                        const result = page.iconBridge.chooseImage(page.category);
+                        if (!result.cancelled) page.finishIconChange(result.error || "");
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "恢复默认"
+                    onClicked: page.finishIconChange(page.iconBridge.select(page.category, ""))
+                }
             }
         }
     }

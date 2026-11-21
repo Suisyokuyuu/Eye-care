@@ -340,6 +340,7 @@ Window {
         id: categoryDetailPage
         anchors.fill: parent
         bridge: appsBridge
+        iconBridge: leftPanelBridge.categoryIcons || null
         onClosed: open = false
         onOpenApp: function(appShort) { appsBridge.openDetail(appShort); appDetailPage.open = true; }
     }

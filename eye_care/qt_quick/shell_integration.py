@@ -12,6 +12,7 @@ runtime_shell 拿到就绪的 controller 后调 `build_shell_bridges(controller,
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 
@@ -77,6 +78,7 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
 
     from eye_care.qt_quick.dashboard_data import make_provider
     from eye_care.qt_quick.left_panel_bridge import LeftPanelBridge
+    from eye_care.qt_quick.category_icons import CategoryIcons
     from eye_care.qt_quick.right_panel_bridge import RightPanelBridge
     from eye_care.qt_quick.settings_bridge import SettingsBridge, build_settings_io
     from eye_care.qt_quick.blacklist_bridge import BlacklistBridge, build_blacklist_io
@@ -96,7 +98,8 @@ def build_shell_bridges(controller, *, persist: bool, log: Optional[logging.Logg
     icon_resolver = _build_icon_resolver(controller, lg)
     domain_icon_resolver, favicon_service = _build_domain_icon_resolver(controller, lg)
     left = LeftPanelBridge(provider, today_str=today, color_cache=shared_colors,
-                           icon_resolver=icon_resolver, domain_icon_resolver=domain_icon_resolver)
+                           icon_resolver=icon_resolver, domain_icon_resolver=domain_icon_resolver,
+                           category_icons=CategoryIcons(Path(controller.data_dir), persist=persist))
     right = RightPanelBridge(provider, today_str=today, color_cache=shared_colors)
 
     s_loader, s_saver = build_settings_io(controller, persist=persist, log=lg)

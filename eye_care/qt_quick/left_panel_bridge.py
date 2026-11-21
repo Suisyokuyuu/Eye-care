@@ -187,10 +187,12 @@ class LeftPanelBridge(QObject):
         color_cache: Optional[dict] = None,
         icon_resolver: Optional[Callable[[str], str]] = None,
         domain_icon_resolver: Optional[Callable[[str], str]] = None,
+        category_icons=None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._provider = snapshot_provider
+        self._category_icons = category_icons
         self._today_str = today_str
         self._icon_resolver = icon_resolver   # app_short → data_url（""=无图标）；生产注入，预览/mock 可 None
         self._icon_cache: dict = {}           # app_short → data_url（非空才缓存）
@@ -213,6 +215,12 @@ class LeftPanelBridge(QObject):
         self._date_text = ""
         self._render_sig = None    # 上次渲染的可见签名，用于跳过无可见变化的刷新
         self._recompute()
+        if category_icons is not None:
+            category_icons.changed.connect(self._render)
+
+    @Property(QObject, constant=True)
+    def categoryIcons(self):
+        return self._category_icons
 
     # ── QML 调用入口 ──────────────────────────────────────────────────────
     @Slot(str)
@@ -333,6 +341,9 @@ class LeftPanelBridge(QObject):
             return _pick_color_avoiding_near(used_hues, base)
         return base
 
+    def _category_icon_for(self, category: str) -> str:
+        return self._category_icons.icon(category) if self._category_icons is not None else ""
+
     def _date_label(self, snap: dict) -> str:
         """复刻 app.js 的 dateLabel：日=今日/日期；周/月=MM-DD ~ MM-DD。"""
         rk = snap.get("range_key", "day")
@@ -437,7 +448,7 @@ class LeftPanelBridge(QObject):
              "dur": it["dur"], "pct": round(it["pct"]),
              "sec": it["sec"], "r": it["r"], "g": it["g"], "b": it["b"],
              "icon": (self._domain_icon_for(it["key"]) if is_browser
-                      else ("" if is_cat else self._icon_for(it["key"])))}
+                      else self._category_icon_for(it["key"]) if is_cat else self._icon_for(it["key"]))}
             for it in items
         ]
         top_lines = [
